@@ -1,0 +1,158 @@
+{-# LANGUAGE TemplateHaskell, NoMonomorphismRestriction, DeriveDataTypeable, PackageImports, ExistentialQuantification #-}
+{-# LANGUAGE QuasiQuotes, TypeFamilies, GeneralizedNewtypeDeriving, TemplateHaskell, OverloadedStrings #-}
+
+module Feed where
+
+import Control.Applicative
+import Control.Exception
+import Control.Monad
+import Control.Monad.IO.Class
+
+import Data.Acid
+import Data.Either
+
+import Data.Accessor
+import qualified Data.Accessor.Container as C
+import Data.Accessor.Template
+import Data.Function
+import qualified Data.Map as Map
+import Data.Maybe
+import Data.Ord
+import Data.Set(Set)
+import qualified Data.Set as Set
+import Data.Time
+import qualified Data.Time.RFC822 as RFC822
+import Data.Typeable
+
+import Network.HTTP
+
+import Text.Feed.Import
+import Text.Feed.Query
+import Text.Feed.Types
+
+type StoryID = String
+
+data Story = Story
+   { ident  :: StoryID
+   , title  :: Maybe String
+   , descr  :: Maybe String
+   , link   :: Maybe String
+   , date   :: Maybe UTCTime
+   } deriving (Typeable, Eq, Show)
+
+nameDeriveAccessors ''Story (Just . (++"F"))
+
+data StoryMetadata = SMD
+   { story   :: Story
+   , fetched :: UTCTime
+   , read    :: Bool
+   , markd   :: Bool
+   } deriving (Show)
+
+instance Eq StoryMetadata where
+  (==) = (==) `on` story
+
+nameDeriveAccessors ''StoryMetadata (Just . (++"F"))
+
+type FeedID = String
+
+data FeedMetadata = Feed
+            { feed    :: FeedID
+            , name    :: String
+            , last    :: Maybe UTCTime
+            , stories :: Map.Map StoryID StoryMetadata
+    } deriving (Typeable, Show)
+
+instance Eq FeedMetadata where
+  (==) = (==) `on` feed
+
+instance Ord FeedMetadata where
+  compare = comparing feed
+
+nameDeriveAccessors ''FeedMetadata (Just . (++"F"))
+
+newtype FeedStore = FeedStore {fromFeedStore :: Map.Map FeedID FeedMetadata }
+  deriving (Typeable)
+
+orIfEQ p q a b = case p a b of
+  EQ -> q a b
+  x  -> x
+
+refining = foldr1 orIfEQ
+
+instance Ord Story where
+  compare = refining [ comparing date
+                     , comparing link
+                     , comparing title
+                     ]
+
+instance Ord StoryMetadata where
+  compare = refining [comparing $ date.story
+                     , comparing fetched
+                     , comparing story
+                     ]
+
+data FeedParseError = FeedParseError deriving (Show, Typeable)
+instance Exception FeedParseError
+
+infixl 1 $.
+($.) = ($)
+
+mapf = flip fmap
+
+feedToStories :: Feed -> [Story]
+feedToStories feed = catMaybes . map feedItemToStory
+                     $ getFeedItems feed
+
+feedItemToStory item = getItemId item `mapf` \iid -> Story
+                                    $. snd iid
+                                    $. getItemTitle item
+                                    $. getItemDescription item
+                                    $. getItemLink item
+                                    $. (zonedTimeToUTC <$>
+                                        (RFC822.parse =<< getItemDate item))
+
+feedFromURL :: String -> IO Feed
+feedFromURL url = do
+  httpData <- simpleHTTP(getRequest url)
+  feed <- parseFeedString <$> getResponseBody httpData
+  case feed of
+    Nothing -> throwIO FeedParseError
+    Just f  -> return f
+
+feedWithMetadataFromURL url = do
+  feed <- feedFromURL url
+  let stories = feedToStories feed
+  now <- getCurrentTime
+  let storiesMetadata = Map.fromList . mapf stories
+                        $ \s -> (ident s, SMD s now False False)
+  return $ Feed url (getFeedTitle feed) (Just now) storiesMetadata
+
+grabFeeds urls = do
+  feeds <- mapM feedWithMetadataFromURL urls
+  return $ Map.fromList (zip urls feeds)
+
+newStories f = do
+  feed <- feedWithMetadataFromURL (feed f)
+  return (stories feed Map.\\ stories f)
+
+-- data TransactionLog = forall x. UpdateEvent x => TL [ x ]
+
+-- updateFeeds = ask >>= \acid -> liftIO $ do
+--   feeds <- query acid AskFeedStore
+--   forM_ (Map.assocs feeds) $ \(key, val) -> do
+--     fetchedStories <- feedToStories <$> feedFromURL (feed val)
+--     let newStories = Map.fromList fetchedStories Map.\\ stories(feeds Map.! key)
+--     update acid AddStories newStories
+
+
+indexError = error "index not found"
+unsafeMap = C.mapDefault indexError
+
+-- access bool-fields in a map combinedly
+allA acc = accessor
+  (all (getVal acc . snd) . Map.toList)
+  (fmap . setVal acc )
+
+-- Accessor for values wrapped in a maybe
+maybeA def = accessor (fromMaybe def) (\v _ -> Just v)
