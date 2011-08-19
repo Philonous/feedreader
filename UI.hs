@@ -3,11 +3,14 @@ module UI where
 
 import Data.Accessor
 import Data.Accessor.Basic(fromWrapper)
-import Data.List (sort, sortBy)
+import qualified Data.Foldable as F
+import qualified Data.Ix as Ix
+import Data.List (sort, sortBy, elemIndex)
+import qualified Data.Map as Map
 import Data.Ord(comparing)
+import qualified Data.Sequence as S
 
 import Control.Applicative((<$>))
-import qualified Data.Map as Map
 import Control.Monad
 import "mtl" Control.Monad.Reader
 import "mtl" Control.Monad.Reader.Class
@@ -22,11 +25,13 @@ import Text.Feed.Query
 
 import Feed
 
-data Diplay = FeedFeed FeedID | FeedStory FeedID StoryID deriving (Show, Eq, Ord)
+data Diplay = FeedFeed FeedID | FeedStory FeedID Int deriving (Show, Eq, Ord)
 
-feedToTree f = Node (FeedFeed $ feed f) (for  (reverse . sortBy (comparing snd) . Map.toList $ stories f) $ \(s,_) ->
-                                        Node (FeedStory (feed f) s) []
-                                        )
+indices s = if S.null s then [] else [0.. S.length s - 1 ]
+indicesFrom a s = if S.null s then [] else [a .. a + S.length s - 1 ]
+
+feedToTree f = Node (FeedFeed $ feed f) [Node (FeedStory (feed f) i) [] | i <- indices (stories f) ]
+
 -- data UISTate = UIS
 --                { view ::
 
@@ -35,10 +40,15 @@ feedToTree f = Node (FeedFeed $ feed f) (for  (reverse . sortBy (comparing snd) 
 fromDisplay  f s (FeedFeed x) = f x
 fromDisplay  f s (FeedStory x y) = s x y
 
+safeIndex s i = if ((0,S.length s) `Ix.inRange` i) then (s `S.index` i) else
+                  error ("range error:" ++ show i ++ " out of bounds (0," ++ (show$ S.length s) ++ ") ")
+
+seqA i = accessor (`safeIndex` i) (S.update i)
+
 dispAcc feedAcc storyAcc disp =
   case disp of
       FeedFeed    f -> feedAcc <. unsafeMap f
-      FeedStory f s -> storyAcc <. unsafeMap s <. storiesF <. unsafeMap f
+      FeedStory f s -> storyAcc <. seqA s <. storiesF <. unsafeMap f
 
 infixl 1 \/
 (\/) = dispAcc
@@ -157,6 +167,19 @@ sortFunc model left' right' = do
   left <- treeModelGetPath model left'  >>= treeStoreGetValue model
   right <- treeModelGetPath model right' >>= treeStoreGetValue model
   return $ compare left right
+
+addFeedToDisplay feed store = do
+  feedCount <- treeModelIterNChildren store Nothing
+  treeStoreInsertTree store [] (feedCount +1) (feedToTree feed)
+
+addStoriesToDisplay feedID stories store = do
+  forest <- treeStoreGetForest store []
+  case (elemIndex feedID  (denode forest)) of
+    Nothing -> putStrLn "Warning: Could not display Story, FeedID not present"
+    Just ix -> treeStoreInsertForest store [ix] 0 $ for stories (\s -> Node (FeedStory feedID s) [])
+    where denode = map (\(Node (FeedFeed x) _) -> x)
+
+
 
 joinTree newTree treeStore pos = do
   oldTree <- zip [0..] <$> treeStoreGetForest treeStore pos

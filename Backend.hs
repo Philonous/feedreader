@@ -7,6 +7,7 @@ import Data.Acid
 import Data.Accessor
 import qualified Data.Map as Map
 import Data.SafeCopy
+import qualified Data.Sequence as S
 
 import Control.Applicative((<$>))
 import "mtl" Control.Monad.Reader.Class
@@ -32,14 +33,14 @@ modFeedStore f = modify $ FeedStore . f . fromFeedStore
 
 insertIfNew = Map.insertWith (flip const)
 
-mkFeed url name = Feed url name Nothing Map.empty
+--mkFeed url name = Feed url name Nothing Map.empty
 
 addFeed' url feed = modFeedStore $ insertIfNew url feed
 
 addStories feed newStories = modFeedStore $
-                             Map.adjust (storiesF ^: Map.union newStories) feed
+                             Map.adjust (storiesF ^: ( S.>< newStories)) feed
 
-modStory f feed story = modFeedStore $ Map.adjust (storiesF ^: Map.adjust f story) feed
+modStory f feed story = modFeedStore $ Map.adjust (storiesF ^: S.adjust f story) feed
 
 setStoryRead = modStory . setVal readF
 setFeedRead feed = modFeedStore . setVal (allA readF <. storiesF <. unsafeMap feed)

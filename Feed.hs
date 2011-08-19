@@ -14,12 +14,12 @@ import Data.Either
 import Data.Accessor
 import qualified Data.Accessor.Container as C
 import Data.Accessor.Template
+import qualified Data.Foldable as F
 import Data.Function
-import qualified Data.Map as Map
+import qualified Data.Map as M
 import Data.Maybe
 import Data.Ord
-import Data.Set(Set)
-import qualified Data.Set as Set
+import qualified Data.Sequence as S
 import Data.Time
 import qualified Data.Time.RFC822 as RFC822
 import Data.Typeable
@@ -60,7 +60,7 @@ data FeedMetadata = Feed
             { feed    :: FeedID
             , name    :: String
             , last    :: Maybe UTCTime
-            , stories :: Map.Map StoryID StoryMetadata
+            , stories :: S.Seq StoryMetadata
     } deriving (Typeable, Show)
 
 instance Eq FeedMetadata where
@@ -71,7 +71,7 @@ instance Ord FeedMetadata where
 
 nameDeriveAccessors ''FeedMetadata (Just . (++"F"))
 
-newtype FeedStore = FeedStore {fromFeedStore :: Map.Map FeedID FeedMetadata }
+newtype FeedStore = FeedStore {fromFeedStore :: M.Map FeedID FeedMetadata }
   deriving (Typeable)
 
 orIfEQ p q a b = case p a b of
@@ -124,17 +124,19 @@ feedWithMetadataFromURL url = do
   feed <- feedFromURL url
   let stories = feedToStories feed
   now <- getCurrentTime
-  let storiesMetadata = Map.fromList . mapf stories
-                        $ \s -> (ident s, SMD s now False False)
+  let storiesMetadata = S.fromList . mapf stories
+                        $ \s -> SMD s now False False
   return $ Feed url (getFeedTitle feed) (Just now) storiesMetadata
 
 grabFeeds urls = do
   feeds <- mapM feedWithMetadataFromURL urls
-  return $ Map.fromList (zip urls feeds)
+  return $ S.fromList (zip urls feeds)
+
+seqDiff a b = S.filter (`F.notElem` b) a
 
 newStories f = do
   feed <- feedWithMetadataFromURL (feed f)
-  return (stories feed Map.\\ stories f)
+  return (stories feed `seqDiff` stories f)
 
 -- data TransactionLog = forall x. UpdateEvent x => TL [ x ]
 
@@ -151,7 +153,7 @@ unsafeMap = C.mapDefault indexError
 
 -- access bool-fields in a map combinedly
 allA acc = accessor
-  (all (getVal acc . snd) . Map.toList)
+  (F.all (getVal acc))
   (fmap . setVal acc )
 
 -- Accessor for values wrapped in a maybe
