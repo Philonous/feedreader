@@ -10,6 +10,7 @@ import "mtl" Control.Monad.Trans
 
 import Data.Accessor
 import Data.Acid
+import Control.Concurrent
 import qualified Data.Foldable as F
 import Data.List(sortBy)
 import Data.Ord(comparing)
@@ -20,6 +21,8 @@ import qualified Data.Sequence as S
 import qualified Data.Traversable as T
 
 import Graphics.UI.Gtk
+
+import System.Directory
 
 import Feed
 import UI
@@ -33,13 +36,14 @@ withFeeds action = ask >>= \acid -> liftIO $ do
 updateFeeds store = do
   acid <- ask
   feeds <- acidAskFeedStore acid
-  T.forM feeds $ \f -> liftIO $ do
+  T.forM feeds $ \f -> liftIO . forkIO $ do
     nStories <- newStories f
     putStrLn $ name f ++ " : " ++ show (S.length nStories) ++ " new Stories"
     acidAddStories acid (feed f) nStories
     let latest = S.length . stories $ f
-    addStoriesToDisplay (feed f) (indicesFrom latest nStories) store
-  putStrLn "Update Done."
+    postGUISync $ addStoriesToDisplay (feed f) (indicesFrom latest nStories) store
+  liftIO $ createCheckpoint acid
+  liftIO $ putStrLn "Update Done."
 
 addFeed url name = do
   acid <- ask
@@ -51,13 +55,10 @@ addFeed url name = do
 
 readerT = flip runReaderT
 
-deleteNewest = do
-  acid <- ask
-  store <- acidAskFeedStore acid
-  acidPutFeedStore acid $ Map.map (storiesF ^: (\stories -> let newest = S.take 3 stories in stories `seqDiff`  newest)) store
-
 main = do
-  state <- openAcidState (FeedStore Map.empty)
+  home <- getHomeDirectory
+  state <- openAcidStateFrom (home ++ "/.feedreader") (FeedStore Map.empty)
+  createCheckpoint state
   readerT state $ do
     addFeed "http://www.lawblog.de/index.php/feed/" "lawblog"
     addFeed "http://www.teamfortress.com/rss.xml" "tf2"
@@ -67,11 +68,14 @@ main = do
   uiMain state feeds
   return ()
 
+-- modify a columnAccessor so that it does something when the user interacts
+-- with the model
 onChange (read, write) feedAction storyAction =
   (read, \display new -> fromDisplay (feedAction new) (storyAction new)  display
                          >> write display new)
 
 readCol acid = onChange (toRead (acidAskFeedStore acid) (const $ return ()) ) (acidFeedRead acid) (acidStoryRead acid)
+
 markdCol acid = onChange (toMarkd (acidAskFeedStore acid) (const $ return ()) ) (acidFeedMarkd acid) (acidStoryMarkd acid)
 
 uiMain acid feedMap = do
@@ -79,17 +83,22 @@ uiMain acid feedMap = do
   let feedForest = feedsToForest feedMap
   model <- liftIO $ treeStoreNew feedForest
   feedRef <- liftIO $ newIORef $ feedMap
-  window <- withMainWindow $ do
-    withHBoxNew $ do
-      treeView <- withNewTreeView model $ do
-        addColumn "name"   [ textRenderer $ toName (acidAskFeedStore acid)]
+  window <- withMainWindow  $ do
+    withNotebook $ do
+      (_,s) <- addPage "feeds" $ withScrolledWindow . withNewTreeView model $ do
+        nameC <- addColumn "name" [ textRenderer $ toName (acidAskFeedStore acid)]
+        liftIO $ set nameC [treeViewColumnExpand := True]
         addColumn "read"   [ toggleRenderer  $ readCol acid    ]
         addColumn "marked" [ toggleRenderer  $ markdCol acid ]
-      button <- addButton "update" $ do
+      liftIO $ scrolledWindowSetPolicy s PolicyNever PolicyAutomatic
+      liftIO $ set s [containerResizeMode := ResizeQueue]
+      button <- addPage "conf" $ addButton "update" .
         readerT acid $ do
           updateFeeds model
           return ()
       return ()
   widgetShowAll window
-  onDestroy window mainQuit
+  onDestroy window (createCheckpoint acid >> mainQuit)
   mainGUI
+
+-- Idee: Widgets in Writer, withContainer übernimmt add

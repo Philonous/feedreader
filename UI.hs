@@ -1,4 +1,4 @@
-{-# LANGUAGE PackageImports, NoMonomorphismRestriction #-}
+{-# LANGUAGE PackageImports, NoMonomorphismRestriction,  RankNTypes, ScopedTypeVariables #-}
 module UI where
 
 import Data.Accessor
@@ -79,19 +79,20 @@ addColumn name renderers= do
       --cellLayoutSetAttributes col rend model attr
       attr col model
   liftIO $ treeViewAppendColumn view col
-  return ()
+  return col
 
 withNewTreeView model action = do
-  current <- ask
+  WA cont <- ask
   treeView <- liftIO $ treeViewNewWithModel model
   lift $ runReaderT action (treeView, model)
-  liftIO $ containerAdd current treeView
+  liftIO $ cont treeView
   return treeView
 
 cLSA rend attr col model = cellLayoutSetAttributes col rend model attr
 
 textRenderer selector = liftIO $ do
   rend <- cellRendererTextNew
+  set rend [cellTextEllipsize := EllipsizeEnd]
   return (toCellRenderer rend, cLSA rend $ \row -> [cellText :=> selector row])
 
 toggleRenderer (getA, setA) = do
@@ -127,24 +128,50 @@ toName get row = do
 
 toLength ref row = length <$> toName ref row
 
+newtype WidgetAdder =  WA (forall w . WidgetClass w => w -> IO ())
+
 withContainer new action = do
-  current <- ask
+  WA cont <- ask
   c <- liftIO $ new
-  lift $ runReaderT action c
-  liftIO $ containerAdd current c
+  res <- lift $ runReaderT action c
+  liftIO $ cont c
+  return (res,c)
+
+addCont action = do
+  container <- ask
+  runReaderT action (WA $ containerAdd container)
+
+boxPackS padding style  action = do
+  container <- ask
+  runReaderT action (WA $ \w -> boxPackStart container w style padding)
+
+boxPackS' style action = boxPackS 0 style action
+
+packGrow = boxPackS' PackGrow
+packNatural = boxPackS' PackNatural
+
+addPage name action = do
+  container <- ask
+  runReaderT action (WA $ \w -> notebookAppendPage container w name >> return () )
 
 withVBoxNew = withContainer (vBoxNew False 0)
 withHBoxNew = withContainer (vBoxNew False 0)
+withHButtonBoxNew = withContainer (vButtonBoxNew)
+withScrolledWindow = withContainer (scrolledWindowNew Nothing Nothing) . addCont
+
+withNotebook = withContainer notebookNew
+
+withAlignment xa ya xs ys = withContainer $ alignmentNew xa ya xs ys
 
 withMainWindow action = do
   w <- windowNew
-  a <- runReaderT action w
+  a <- runReaderT action (WA $ containerAdd w)
   return w
 
 addNewWidget new = do
-  current <- ask
+  WA cont <- ask
   w <- liftIO $ new
-  liftIO $ containerAdd current w
+  liftIO $ cont w
   return w
 
 addButton name action = do
@@ -156,6 +183,13 @@ addButton name action = do
 treeStoreGetForest store pos = do
   (Node _ xs) <- treeStoreGetTree store pos
   return xs
+
+-- boxPack style pad action = do
+--   container <- ask
+--   runReaderT action (container, \cont widget -> boxPackEnd cont widget style pad)
+
+
+-- natural action = boxPack PackNatural 0
 
 invert LT = GT
 invert EQ = EQ
@@ -194,6 +228,7 @@ joinTree newTree treeStore pos = do
         LT -> mergeTrees pos end xs ya
         EQ -> joinTree yt treeStore (pos ++[cur]) >> mergeTrees pos end xs ys
         GT -> treeStoreInsertTree treeStore pos cur yc >> joinTree ys treeStore pos
+
 
 
 

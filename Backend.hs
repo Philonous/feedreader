@@ -2,7 +2,6 @@
 
 module Backend where
 
-import Data.Acid(makeAcidic)
 import Data.Acid
 import Data.Accessor
 import qualified Data.Map as Map
@@ -32,8 +31,6 @@ modFeedStore :: (Map.Map FeedID FeedMetadata -> Map.Map FeedID FeedMetadata)
 modFeedStore f = modify $ FeedStore . f . fromFeedStore
 
 insertIfNew = Map.insertWith (flip const)
-
---mkFeed url name = Feed url name Nothing Map.empty
 
 addFeed' url feed = modFeedStore $ insertIfNew url feed
 
