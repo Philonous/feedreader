@@ -6,7 +6,7 @@ module Feed where
 import Control.Applicative
 import Control.Exception
 import Control.Monad
-import Control.Monad.IO.Class
+import Control.Monad.Trans
 
 import Data.Acid
 import Data.Either
@@ -59,7 +59,8 @@ type FeedID = String
 data FeedMetadata = Feed
             { feed    :: FeedID
             , name    :: String
-            , last    :: Maybe UTCTime
+            , home    :: Maybe String
+            , last    :: UTCTime
             , stories :: S.Seq StoryMetadata
     } deriving (Typeable, Show)
 
@@ -126,7 +127,7 @@ feedWithMetadataFromURL url = do
   now <- getCurrentTime
   let storiesMetadata = S.fromList . mapf stories
                         $ \s -> SMD s now False False
-  return $ Feed url (getFeedTitle feed) (Just now) storiesMetadata
+  return $ Feed url (getFeedTitle feed) (getFeedHome feed) now storiesMetadata
 
 grabFeeds urls = do
   feeds <- mapM feedWithMetadataFromURL urls

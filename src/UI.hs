@@ -19,13 +19,16 @@ import "mtl" Control.Monad.Trans
 import Data.IORef
 import Data.Maybe
 import Data.Tree
-import Graphics.UI.Gtk
+import Graphics.UI.Gtk as GTK
 
 import Text.Feed.Query
 
 import Feed
+import WidgetBuilder
 
-data Diplay = FeedFeed FeedID | FeedStory FeedID Int deriving (Show, Eq, Ord)
+data DisplayFeed = FeedFeed FeedID | FeedStory FeedID Int deriving (Show, Eq, Ord)
+
+type GTKStore = GTK.TreeStore DisplayFeed
 
 indices s = if S.null s then [] else [0.. S.length s - 1 ]
 indicesFrom a s = if S.null s then [] else [a .. a + S.length s - 1 ]
@@ -37,13 +40,15 @@ feedToTree f = Node (FeedFeed $ feed f) [Node (FeedStory (feed f) i) [] | i <- i
 
 --                    }
 
-fromDisplay  f s (FeedFeed x) = f x
-fromDisplay  f s (FeedStory x y) = s x y
+fromGTKStore  f s (FeedFeed x) = f x
+fromGTKStore  f s (FeedStory x y) = s x y
 
 safeIndex s i = if ((0,S.length s) `Ix.inRange` i) then (s `S.index` i) else
                   error ("range error:" ++ show i ++ " out of bounds (0," ++ (show$ S.length s) ++ ") ")
 
 seqA i = accessor (`safeIndex` i) (S.update i)
+
+showA = accessor show (\x _ -> Prelude.read x)
 
 dispAcc feedAcc storyAcc disp =
   case disp of
@@ -62,60 +67,20 @@ readA = allA readF <. storiesF \/ readF
 -- is this story / every story in this feed marked
 markdA = allA markdF <. storiesF \/ markdF
 
+dateA = showA <. lastF \/ showA <. fetchedF
+
 for = flip map
 
 -- prepare map as forest for use in a treeview
 feedsToForest = map (feedToTree . snd) . Map.toList
 
--- add a column to a tree view
-addColumn name renderers= do
-  (view, model) <- ask
-  col <- liftIO $ treeViewColumnNew
-  liftIO $ set col [treeViewColumnTitle := name]
-  forM_ renderers $ \i -> do
-    (rend, attr) <- i
-    liftIO $ do
-      treeViewColumnPackStart col rend True
-      --cellLayoutSetAttributes col rend model attr
-      attr col model
-  liftIO $ treeViewAppendColumn view col
-  return col
-
-withNewTreeView model action = do
-  WA cont <- ask
-  treeView <- liftIO $ treeViewNewWithModel model
-  lift $ runReaderT action (treeView, model)
-  liftIO $ cont treeView
-  return treeView
-
-cLSA rend attr col model = cellLayoutSetAttributes col rend model attr
-
-textRenderer selector = liftIO $ do
-  rend <- cellRendererTextNew
-  set rend [cellTextEllipsize := EllipsizeEnd]
-  return (toCellRenderer rend, cLSA rend $ \row -> [cellText :=> selector row])
-
-toggleRenderer (getA, setA) = do
-  (view,model) <- ask
-  liftIO $ do
-    rend <- cellRendererToggleNew
-    on rend cellToggled $ \s -> do
-      row <- treeStoreGetValue model $ stringToTreePath s
-      active <- getA row
-      setA row (not active)
-      case row of
-        FeedFeed _ -> widgetQueueDraw view
-        _ -> return ()
-    return (toCellRenderer rend, cLSA rend $ \row -> [cellToggleActive :=> getA row])
 
 fromGetSet acc get set =
   ( \row -> getVal (acc row) <$> get
   , \row x ->  ( setVal (acc row) x <$> get >>= set)
   )
 
-
 toRead = fromGetSet readA
-
 toMarkd = fromGetSet markdA
 
 testFeeds = ["http://www.lawblog.de/index.php/feed/"
@@ -126,59 +91,13 @@ toName get row = do
   feeds <- get
   return $ feeds ^. nameA row
 
+
+toDate get row = do
+  feeds <- get
+  return $ feeds ^. dateA row
+
 toLength ref row = length <$> toName ref row
 
-newtype WidgetAdder =  WA (forall w . WidgetClass w => w -> IO ())
-
-withContainer new action = do
-  WA cont <- ask
-  c <- liftIO $ new
-  res <- lift $ runReaderT action c
-  liftIO $ cont c
-  return (res,c)
-
-addCont action = do
-  container <- ask
-  runReaderT action (WA $ containerAdd container)
-
-boxPackS padding style  action = do
-  container <- ask
-  runReaderT action (WA $ \w -> boxPackStart container w style padding)
-
-boxPackS' style action = boxPackS 0 style action
-
-packGrow = boxPackS' PackGrow
-packNatural = boxPackS' PackNatural
-
-addPage name action = do
-  container <- ask
-  runReaderT action (WA $ \w -> notebookAppendPage container w name >> return () )
-
-withVBoxNew = withContainer (vBoxNew False 0)
-withHBoxNew = withContainer (vBoxNew False 0)
-withHButtonBoxNew = withContainer (vButtonBoxNew)
-withScrolledWindow = withContainer (scrolledWindowNew Nothing Nothing) . addCont
-
-withNotebook = withContainer notebookNew
-
-withAlignment xa ya xs ys = withContainer $ alignmentNew xa ya xs ys
-
-withMainWindow action = do
-  w <- windowNew
-  a <- runReaderT action (WA $ containerAdd w)
-  return w
-
-addNewWidget new = do
-  WA cont <- ask
-  w <- liftIO $ new
-  liftIO $ cont w
-  return w
-
-addButton name action = do
-  b <- liftIO $ buttonNew
-  liftIO $ buttonSetLabel b name
-  liftIO $ on b buttonActivated action
-  addNewWidget $ return b
 
 treeStoreGetForest store pos = do
   (Node _ xs) <- treeStoreGetTree store pos
@@ -202,11 +121,11 @@ sortFunc model left' right' = do
   right <- treeModelGetPath model right' >>= treeStoreGetValue model
   return $ compare left right
 
-addFeedToDisplay feed store = do
+addFeedToGTKStore feed store = do
   feedCount <- treeModelIterNChildren store Nothing
   treeStoreInsertTree store [] (feedCount +1) (feedToTree feed)
 
-addStoriesToDisplay feedID stories store = do
+addStoriesToGTKStore feedID stories store = do
   forest <- treeStoreGetForest store []
   case (elemIndex feedID  (denode forest)) of
     Nothing -> putStrLn "Warning: Could not display Story, FeedID not present"
@@ -214,6 +133,19 @@ addStoriesToDisplay feedID stories store = do
     where denode = map (\(Node (FeedFeed x) _) -> x)
 
 
+
+toggleRenderer (getA, setA) = do
+  (view,model) <- ask
+  liftIO $ do
+    rend <- cellRendererToggleNew
+    on rend cellToggled $ \s -> do
+      row <- treeStoreGetValue model $ stringToTreePath s
+      active <- getA row
+      setA row (not active)
+      case row of
+        FeedFeed _ -> widgetQueueDraw view
+        _ -> return ()
+    return (toCellRenderer rend, cLSA rend $ \row -> [cellToggleActive :=> getA row])
 
 joinTree newTree treeStore pos = do
   oldTree <- zip [0..] <$> treeStoreGetForest treeStore pos

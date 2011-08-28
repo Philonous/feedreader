@@ -1,0 +1,36 @@
+Name:          feedreader
+Version:       0.1
+Synopsis:      A gtk feed reader
+Description:   A gtk feed reader
+License:       MIT
+Author:        Philipp Balzarek
+Maintainer:    p.balzarek@googlemail.com
+Stability:     Experimental
+Category:      Feed
+cabal-version: >= 1.6
+Build-Type:    Simple
+
+Executable feedreader
+  HS-Source-dirs: src
+  Main-is: Main.hs
+  Build-Depends: base
+               , acid-state
+               , containers
+               , data-accessor
+               , data-accessor-template
+               , directory
+               , feed
+               , glib
+               , gtk -any
+               , HTTP
+               , mtl
+               , process
+               , safecopy
+               , time
+               , time-http >= 0.1.0.1
+  Other-Modules: Backend
+               , DataBackend
+               , Feed
+               , Keymap
+               , UI
+               , WidgetBuilder
