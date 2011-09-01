@@ -6,7 +6,7 @@ module Feed where
 import Control.Applicative
 import Control.Exception
 import Control.Monad
-import Control.Monad.Trans
+import "mtl" Control.Monad.Trans
 
 import Data.Acid
 import Data.Either

@@ -30,6 +30,10 @@ data DisplayFeed = FeedFeed FeedID | FeedStory FeedID Int deriving (Show, Eq, Or
 
 type GTKStore = GTK.TreeStore DisplayFeed
 
+treeFilterModelGetValue model filterModel path = do
+  path' <- treeModelFilterConvertPathToChildPath filterModel path
+  treeStoreGetValue model path'
+
 indices s = if S.null s then [] else [0.. S.length s - 1 ]
 indicesFrom a s = if S.null s then [] else [a .. a + S.length s - 1 ]
 
@@ -132,16 +136,16 @@ addStoriesToGTKStore feedID stories store = do
     Just ix -> treeStoreInsertForest store [ix] 0 $ for stories (\s -> Node (FeedStory feedID s) [])
     where denode = map (\(Node (FeedFeed x) _) -> x)
 
-
-
 toggleRenderer (getA, setA) = do
-  (view,model) <- ask
+  (view,model, wrapper) <- ask
   liftIO $ do
     rend <- cellRendererToggleNew
     on rend cellToggled $ \s -> do
-      row <- treeStoreGetValue model $ stringToTreePath s
+      path <- treeModelFilterConvertPathToChildPath wrapper $ stringToTreePath s
+      row <- treeStoreGetValue model path
       active <- getA row
       setA row (not active)
+      treeModelFilterRefilter wrapper
       case row of
         FeedFeed _ -> widgetQueueDraw view
         _ -> return ()

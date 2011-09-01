@@ -4,6 +4,8 @@ module WidgetBuilder where
 
 import "mtl"  Control.Monad.Reader
 
+import Data.IORef
+
 import Graphics.UI.Gtk
 
 newtype WidgetAdder =  WA (forall w . WidgetClass w => w -> IO ())
@@ -58,28 +60,25 @@ addButton name action = do
   liftIO $ on b buttonActivated action
   addNewWidget $ return b
 
-addProgressBar = do
-  b <- liftIO $ progressBarNew
-  addNewWidget $ return b
+addProgressBar = addNewWidget $ progressBarNew
 
 -- add a column to a tree view
 addColumn name renderers= do
-  (view, model) <- ask
+  (view, model, wrapper) <- ask
   col <- liftIO $ treeViewColumnNew
   liftIO $ set col [treeViewColumnTitle := name]
   forM_ renderers $ \i -> do
     (rend, attr) <- i
     liftIO $ do
       treeViewColumnPackStart col rend True
-      --cellLayoutSetAttributes col rend model attr
       attr col model
   liftIO $ treeViewAppendColumn view col
   return col
 
-withNewTreeView model action = do
+withNewTreeView wrapper model action = do
   WA cont <- ask
-  treeView <- liftIO $ treeViewNewWithModel model
-  lift $ runReaderT action (treeView, model)
+  treeView <- liftIO $ treeViewNewWithModel wrapper
+  lift $ runReaderT action (treeView, model, wrapper)
   liftIO $ cont treeView
   return treeView
 
@@ -89,4 +88,27 @@ textRenderer selector = liftIO $ do
   rend <- cellRendererTextNew
   set rend [cellTextEllipsize := EllipsizeEnd]
   return (toCellRenderer rend, cLSA rend $ \row -> [cellText :=> selector row])
+
+textBufferAppendLine buffer entry = do
+  end <- textBufferGetEndIter buffer
+  textBufferInsert buffer end (entry ++ "\n")
+
+createLog = do
+  text <- liftIO $ textViewNew
+  buffer <- liftIO $ textViewGetBuffer text
+  addNewWidget (return text)
+  return (text, textBufferAppendLine buffer)
+
+withTreeModelFilter ref createModel = do
+  model <- createModel
+  treeModelFilter <- treeModelFilterNew model []
+  let filter = \iter -> do
+        path <- treeModelGetPath model iter
+        row <- treeStoreGetValue model path
+        filter <- readIORef ref
+        filter row
+  treeModelFilterSetVisibleFunc treeModelFilter filter
+  return (model, treeModelFilter)
+
+
 
