@@ -175,8 +175,9 @@ filterRead = lift $ do
 
 
 myKeymap = mkKeymap
-	 [ ((0, "a") , updateFeeds)
+	 [ ((control, "u") , updateFeeds)
 	 , ((0, "g" ) , openCurrentInBrowser)
+	 , ((shift, "g" ) , openCurrentInBrowser)
 	 , ((0, "l" ) , toggleVisible logWindow )
 	 , ((0, "r" ) , setRead True)
 	 , ((0, "u" ) , setRead False)

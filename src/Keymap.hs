@@ -10,7 +10,9 @@ import "mtl" Control.Monad.Trans
 import "mtl" Control.Monad.Reader
 import "mtl" Control.Monad.State
 
+import Graphics.UI.Gtk.Gdk.Keys (keyvalToLower)
 import qualified Graphics.UI.Gtk as GTK
+
 import System.Glib.Flags
 
 
@@ -51,7 +53,7 @@ data NextMap = Reset -- reset Map to default
 
 -- handleKey :: Web -> GTK.EventM GTK.EKey Bool
 handleKey conf = do
-  keyVal <-  GTK.eventKeyVal
+  keyVal <-  keyvalToLower <$> GTK.eventKeyVal
   mods <- fromFlags <$> GTK.eventModifier
   currentKeymap <- liftIO $ head <$> readIORef (keymapRef conf)
   through <- liftIO $ readIORef $ typeThroughRef conf
@@ -70,7 +72,7 @@ handleKey conf = do
       return True
 
 
-mkKeymap keyDefs = Map.fromList $ for keyDefs $ \ ((mod,keyname),action) -> ((mod, GTK.keyFromName keyname) , action)
+mkKeymap keyDefs = Map.fromList $ for keyDefs $ \ ((mod,keyname),action) -> ((mod, keyvalToLower $ GTK.keyFromName keyname) , action)
    where
      for = flip map
 addKeymap widget typeThroughOnMissmatch runAction keymap = do
