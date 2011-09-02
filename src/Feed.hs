@@ -115,7 +115,9 @@ feedItemToStory item = getItemId item `mapf` \iid -> Story
 
 feedFromURL :: String -> IO Feed
 feedFromURL url = do
+  putStrLn "http..."
   httpData <- simpleHTTP(getRequest url)
+  putStrLn "response and parsing"
   feed <- parseFeedString <$> getResponseBody httpData
   case feed of
     Nothing -> throwIO FeedParseError

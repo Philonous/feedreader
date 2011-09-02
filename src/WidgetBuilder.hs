@@ -35,7 +35,7 @@ addPage name action = do
   runReaderT action (WA $ \w -> notebookAppendPage container w name >> return () )
 
 withVBoxNew = withContainer (vBoxNew False 0)
-withHBoxNew = withContainer (vBoxNew False 0)
+withHBoxNew = withContainer (hBoxNew False 0)
 withHButtonBoxNew = withContainer (vButtonBoxNew)
 withScrolledWindow = withContainer (scrolledWindowNew Nothing Nothing) . addCont
 
@@ -53,6 +53,9 @@ addNewWidget new = do
   w <- liftIO $ new
   liftIO $ cont w
   return w
+
+addLabel = addNewWidget $ labelNew Nothing
+addEntry = addNewWidget entryNew
 
 addButton name action = do
   b <- liftIO $ buttonNew

@@ -1,4 +1,4 @@
-4dist/
+dist/
 *.o
 *.hi
 *~

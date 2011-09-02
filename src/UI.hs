@@ -167,6 +167,3 @@ joinTree newTree treeStore pos = do
 
 
 
-
-
-
