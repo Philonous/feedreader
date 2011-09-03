@@ -1,19 +1,23 @@
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE PackageImports, RecordWildCards #-}
 module Keymap where
 
-import Data.IORef
-import qualified Data.Map as Map
+import           Data.IORef
+import qualified Data.Map                 as Map
+import           Data.Typeable
 
-import Control.Applicative((<$>))
-import "mtl" Control.Monad.Trans
-import "mtl" Control.Monad.Reader
-import "mtl" Control.Monad.State
+import           Control.Applicative      ((<$>))
+import           Control.Exception        as Ex
+import "mtl"     Control.Monad.Trans
+import "mtl"     Control.Monad.Reader
+import "mtl"     Control.Monad.State
 
-import Graphics.UI.Gtk.Gdk.Keys (keyvalToLower)
-import qualified Graphics.UI.Gtk as GTK
+import           Graphics.UI.Gtk.Gdk.Keys (keyvalToLower)
+import qualified Graphics.UI.Gtk          as GTK
 
-import System.Glib.Flags
+import           System.Glib.Flags
 
 
 -- modifier flags
@@ -51,6 +55,9 @@ data NextMap = Reset -- reset Map to default
              | Keep  -- keep current map
              | Back  -- revert one layer
 
+data AbortKey = AbortKey deriving (Show, Typeable)
+instance Exception AbortKey
+
 -- handleKey :: Web -> GTK.EventM GTK.EKey Bool
 handleKey conf = do
   keyVal <-  keyvalToLower <$> GTK.eventKeyVal
@@ -64,7 +71,8 @@ handleKey conf = do
     else case Map.lookup (mods, keyVal) currentKeymap of
     Nothing -> return . not . typeThroughOnMissmatch $ conf
     Just action -> do
-      (_, nextmap) <- liftIO . runAction conf $ runStateT action Reset
+      (_, nextmap) <- liftIO $ Ex.catch (runAction conf $ runStateT action Reset)
+      	                                ( \(e :: AbortKey) -> return ((),Reset) )
       case nextmap of
 	 Reset -> liftIO $ writeIORef (keymapRef conf) [keymap conf]
 	 Back  -> liftIO $ modifyIORef (keymapRef conf) tail

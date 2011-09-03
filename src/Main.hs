@@ -1,10 +1,12 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NoMonomorphismRestriction, TemplateHaskell, PackageImports, TypeFamilies, DeriveDataTypeable #-}
 module Main where
 
-import           Prelude              hiding (log)
+import           Prelude              hiding (log, catch)
 
 import           Control.Applicative  ((<$>))
 import           Control.Concurrent
+import           Control.Exception
 import           Control.Monad
 import "mtl"     Control.Monad.Reader
 
@@ -52,6 +54,9 @@ type ReaderMonad a = ReaderT ReaderState IO a
 updateView = asks updateView' >>= id
 
 log message = asks logStr >>= \l -> liftIO $ l message
+catchReader a h = do
+  r <- ask
+  liftIO $ catch (runReaderT a r) (\e -> runReaderT (h e) r)
 
 withFeeds action = ask >>= \acid -> liftIO $ do
   feeds <- acidAskFeedStore acid
@@ -64,10 +69,13 @@ updateFeeds = do
   feeds <- acidAskFeedStore acid
   bar <- asks progress
   logs <- asks logStr
+  s <- ask
   liftIO . forkIO $ do
-    let numStories = fromIntegral $ Map.size feeds
+    let numFeeds = fromIntegral $ Map.size feeds
     postGUISync $ widgetShow bar
-    forM (zip [1..] $ Map.elems feeds) $ \(i,f) -> do
+    forM (zip [1..] $ Map.elems feeds) $ \(i,f) -> handle
+      ( \(e :: FeedFetchError) -> runReaderT (log $ "Error while updating: \n"
+      ++ (show e) ) s )  $ do
       postGUISync $ progressBarSetText bar ("Updating " ++ name f)
       nStories <- newStories f
       logs $ name f ++ " : " ++ show (S.length nStories) ++ " new Stories"
@@ -75,7 +83,7 @@ updateFeeds = do
       let latest = S.length . stories $ f
       postGUISync $ do
         addStoriesToGTKStore (feed f) (indicesFrom latest nStories) store
-        progressBarSetFraction bar (i / numStories)
+        progressBarSetFraction bar (i / numFeeds)
     postGUISync $ widgetHide bar
     return ()
   liftIO $ createCheckpoint acid
@@ -85,13 +93,14 @@ addFeed url = do
   acid <- asks acidStore
   feeds <- acidAskFeedStore acid
   store <- asks gtkStore
-  unless (url `Map.member` feeds) $ do
-    newFeed <- liftIO $ catch (feedWithMetadataFromURL url) (\e -> print "error" >> print e >> ioError e)
---    let newFeed = setVal storiesF S.empty newFeed'
-    liftIO $ acidAddFeed acid url newFeed
-    liftIO $ addFeedToGTKStore newFeed store
+  handleError . unless (url `Map.member` feeds) . liftIO $ do
+    newFeed <- feedWithMetadataFromURL url
+    acidAddFeed acid url newFeed
+    addFeedToGTKStore newFeed store
     return ()
   updateView
+  where
+    handleError = flip catchReader (\ (e :: FeedFetchError) -> log ("error: " ++ show e))
 
 getCurrentRow = do
   view <- asks treeView

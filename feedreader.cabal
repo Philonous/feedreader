@@ -24,6 +24,7 @@ Executable feedreader
                , gtk -any
                , HTTP
                , mtl
+               , network
                , process
                , safecopy
                , time

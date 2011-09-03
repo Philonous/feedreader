@@ -1,7 +1,10 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell, NoMonomorphismRestriction, DeriveDataTypeable, PackageImports, ExistentialQuantification #-}
 {-# LANGUAGE QuasiQuotes, TypeFamilies, GeneralizedNewtypeDeriving, TemplateHaskell, OverloadedStrings #-}
 
 module Feed where
+
+import Prelude hiding(catch)
 
 import Control.Applicative
 import Control.Exception
@@ -25,6 +28,9 @@ import qualified Data.Time.RFC822 as RFC822
 import Data.Typeable
 
 import Network.HTTP
+import Network.URI
+
+import System.IO.Error(isUserError)
 
 import Text.Feed.Import
 import Text.Feed.Query
@@ -93,8 +99,9 @@ instance Ord StoryMetadata where
                      , comparing story
                      ]
 
-data FeedParseError = FeedParseError deriving (Show, Typeable)
-instance Exception FeedParseError
+data FeedFetchError = FeedParseError | URLError String | HTTPError String
+			deriving (Show, Typeable)
+instance Exception FeedFetchError
 
 infixl 1 $.
 ($.) = ($)
@@ -116,7 +123,12 @@ feedItemToStory item = getItemId item `mapf` \iid -> Story
 feedFromURL :: String -> IO Feed
 feedFromURL url = do
   putStrLn "http..."
-  httpData <- simpleHTTP(getRequest url)
+  httpData <- case parseURI url of
+    Nothing -> throwIO . HTTPError $ "Not a valid URL: \"" ++ url ++ "\""
+    Just u -> catch (simpleHTTP (mkRequest GET u))
+                    (\(e :: IOError) -> if isUserError e then
+                     throwIO $ HTTPError "connection error"
+                     else throwIO e )
   putStrLn "response and parsing"
   feed <- parseFeedString <$> getResponseBody httpData
   case feed of
