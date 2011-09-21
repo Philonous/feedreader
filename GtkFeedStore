@@ -1,0 +1,4 @@
+module GtkFeedStore where
+
+import Graphics.UI.Gtk as GTK
+

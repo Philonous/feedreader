@@ -1,3 +1,4 @@
+{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell, NoMonomorphismRestriction, DeriveDataTypeable, PackageImports, ExistentialQuantification #-}
 {-# LANGUAGE QuasiQuotes, TypeFamilies, GeneralizedNewtypeDeriving, TemplateHaskell, OverloadedStrings #-}
@@ -77,9 +78,6 @@ instance Ord FeedMetadata where
   compare = comparing feed
 
 nameDeriveAccessors ''FeedMetadata (Just . (++"F"))
-
-newtype FeedStore = FeedStore {fromFeedStore :: M.Map FeedID FeedMetadata }
-  deriving (Typeable)
 
 orIfEQ p q a b = case p a b of
   EQ -> q a b
@@ -173,3 +171,15 @@ allA acc = accessor
 
 -- Accessor for values wrapped in a maybe
 maybeA def = accessor (fromMaybe def) (\v _ -> Just v)
+
+showDiffTime :: NominalDiffTime -> String
+showDiffTime (floor . toRational -> (d :: Integer))
+  	      | d < 60 = show d ++ "s"
+  	      | d < 60^2 = show (d `div` 60) ++ "m"
+  	      | d < 60^2 * 24 = show (d `div` 3600) ++ "h"
+  	      | d < 60^2 * 24 * 7 = show (d `div` 3600 * 24) ++ "d"
+  	      | d < 60^2 * 24 * 365 = show (d `div` 3600 * 24 * 7) ++ "w"
+  	      | otherwise = show (d `div` 3600 * 24 * 7 * 365) ++ "y"
+
+timeDiff x y  = showDiffTime (diffUTCTime x y) ++ " ago"
+-- timeDiff x y  = show y

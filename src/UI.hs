@@ -1,3 +1,4 @@
+{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE PackageImports, NoMonomorphismRestriction,  RankNTypes, ScopedTypeVariables #-}
 module UI where
 
@@ -18,6 +19,7 @@ import "mtl" Control.Monad.Trans
 
 import Data.IORef
 import Data.Maybe
+import Data.Time
 import Data.Tree
 import Graphics.UI.Gtk as GTK
 
@@ -25,8 +27,9 @@ import Text.Feed.Query
 
 import Feed
 import WidgetBuilder
+import GTKFeedStore
 
-data DisplayFeed = FeedFeed FeedID | FeedStory FeedID Int deriving (Show, Eq, Ord)
+-- data DisplayFeed = FeedFeed FeedID | FeedStory FeedID Int deriving (Show, Eq, Ord)
 
 type GTKStore = GTK.TreeStore DisplayFeed
 
@@ -34,18 +37,18 @@ treeFilterModelGetValue model filterModel path = do
   path' <- treeModelFilterConvertPathToChildPath filterModel path
   treeStoreGetValue model path'
 
-indices s = if S.null s then [] else [0.. S.length s - 1 ]
+-- indices s = if S.null s then [] else [0.. S.length s - 1 ]
 indicesFrom a s = if S.null s then [] else [a .. a + S.length s - 1 ]
 
-feedToTree f = Node (FeedFeed $ feed f) [Node (FeedStory (feed f) i) [] | i <- indices (stories f) ]
+feedToTree f = Node (FeedFeed f) [Node (FeedStory f i) [] | i <- indices (stories f) ]
 
 -- data UISTate = UIS
 --                { view ::
 
 --                    }
 
-fromGTKStore  f s (FeedFeed x) = f x
-fromGTKStore  f s (FeedStory x y) = s x y
+fromGTKStore  f s (FeedFeed x) = f (feed x)
+fromGTKStore  f s (FeedStory x y) = s (feed x) y
 
 safeIndex s i = if ((0,S.length s) `Ix.inRange` i) then (s `S.index` i) else
                   error ("range error:" ++ show i ++ " out of bounds (0," ++ (show$ S.length s) ++ ") ")
@@ -56,8 +59,8 @@ showA = accessor show (\x _ -> Prelude.read x)
 
 dispAcc feedAcc storyAcc disp =
   case disp of
-      FeedFeed    f -> feedAcc <. unsafeMap f
-      FeedStory f s -> storyAcc <. seqA s <. storiesF <. unsafeMap f
+      FeedFeed    f -> feedAcc <. unsafeMap (feed f)
+      FeedStory f s -> storyAcc <. seqA s <. storiesF <. unsafeMap (feed f)
 
 infixl 1 \/
 (\/) = dispAcc
@@ -71,7 +74,7 @@ readA = allA readF <. storiesF \/ readF
 -- is this story / every story in this feed marked
 markdA = allA markdF <. storiesF \/ markdF
 
-dateA = showA <. lastF \/ showA <. fetchedF
+dateA = lastF \/ fetchedF
 
 for = flip map
 
@@ -98,7 +101,8 @@ toName get row = do
 
 toDate get row = do
   feeds <- get
-  return $ feeds ^. dateA row
+  now <- liftIO $ getCurrentTime
+  return . timeDiff now $ feeds ^. dateA row
 
 toLength ref row = length <$> toName ref row
 
@@ -126,8 +130,9 @@ sortFunc model left' right' = do
   return $ compare left right
 
 addFeedToGTKStore feed store = do
-  feedCount <- treeModelIterNChildren store Nothing
-  treeStoreInsertTree store [] (feedCount +1) (feedToTree feed)
+--  feedCount <- treeModelIterNChildren store Nothing
+  let tree = feedToTree feed
+  treeStoreInsertTree store [] (-1) tree
 
 addStoriesToGTKStore feedID stories store = do
   forest <- treeStoreGetForest store []
@@ -137,15 +142,15 @@ addStoriesToGTKStore feedID stories store = do
     where denode = map (\(Node (FeedFeed x) _) -> x)
 
 toggleRenderer (getA, setA) = do
-  (view,model, wrapper) <- ask
+  (view,model) <- ask
   liftIO $ do
     rend <- cellRendererToggleNew
     on rend cellToggled $ \s -> do
-      path <- treeModelFilterConvertPathToChildPath wrapper $ stringToTreePath s
-      row <- treeStoreGetValue model path
+      let path = stringToTreePath s
+      Just iter <- treeModelGetIter model path
+      row <- customStoreGetRow model iter
       active <- getA row
       setA row (not active)
-      treeModelFilterRefilter wrapper
       case row of
         FeedFeed _ -> widgetQueueDraw view
         _ -> return ()
@@ -164,6 +169,3 @@ joinTree newTree treeStore pos = do
         LT -> mergeTrees pos end xs ya
         EQ -> joinTree yt treeStore (pos ++[cur]) >> mergeTrees pos end xs ys
         GT -> treeStoreInsertTree treeStore pos cur yc >> joinTree ys treeStore pos
-
-
-

@@ -67,7 +67,7 @@ addProgressBar = addNewWidget $ progressBarNew
 
 -- add a column to a tree view
 addColumn name renderers= do
-  (view, model, wrapper) <- ask
+  (view, model) <- ask
   col <- liftIO $ treeViewColumnNew
   liftIO $ set col [treeViewColumnTitle := name]
   forM_ renderers $ \i -> do
@@ -78,10 +78,10 @@ addColumn name renderers= do
   liftIO $ treeViewAppendColumn view col
   return col
 
-withNewTreeView wrapper model action = do
+withNewTreeView model action = do
   WA cont <- ask
-  treeView <- liftIO $ treeViewNewWithModel wrapper
-  lift $ runReaderT action (treeView, model, wrapper)
+  treeView <- liftIO $ treeViewNewWithModel model
+  lift $ runReaderT action (treeView, model)
   liftIO $ cont treeView
   return treeView
 
@@ -105,11 +105,19 @@ createLog = do
 withTreeModelFilter ref createModel = do
   model <- createModel
   treeModelFilter <- treeModelFilterNew model []
-  let filter = \iter -> do
+  let filter iter = do
         path <- treeModelGetPath model iter
-        row <- treeStoreGetValue model path
-        filter <- readIORef ref
-        filter row
+        case path of
+          [] -> return False -- not catching this case or returning True will
+                             -- crash the program with seg fault.
+                             -- This problem only seems to appear
+                             -- when adding the first element to an initially
+                             -- empty child store
+          _  -> do
+                 print path
+                 row <- treeStoreGetValue model path
+                 filter <- readIORef ref
+                 filter row
   treeModelFilterSetVisibleFunc treeModelFilter filter
   return (model, treeModelFilter)
 

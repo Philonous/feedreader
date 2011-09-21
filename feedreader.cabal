@@ -30,7 +30,6 @@ Executable feedreader
                , time
                , time-http >= 0.1.0.1
   Other-Modules: Backend
-               , DataBackend
                , Feed
                , Keymap
                , UI

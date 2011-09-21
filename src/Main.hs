@@ -11,7 +11,6 @@ import           Control.Monad
 import "mtl"     Control.Monad.Reader
 
 import           Data.Accessor
-import           Data.Acid
 import qualified Data.Foldable        as F
 import           Data.IORef
 import           Data.List            (sortBy)
@@ -19,7 +18,9 @@ import qualified Data.Map             as Map
 import           Data.Ord             (comparing)
 import           Data.SafeCopy
 import qualified Data.Sequence        as S
+import           Data.Time
 import qualified Data.Traversable     as T
+import           Data.Tree
 
 import           Graphics.UI.Gtk      as GTK
 
@@ -28,28 +29,28 @@ import           System.Directory
 
 import           Feed
 import           UI
-import           Backend
+import qualified Backend              as Store
+import           Backend.Acid
 import           WidgetBuilder
 import           Keymap
+import           GTKFeedStore
 
-data ReaderState = RS
-  { gtkStore      :: GTKStore
+data ReaderState store = RS
+  { feedStore     :: store
   , treeView      :: TreeView
-  , filterModel   :: TreeModelFilter
   , progress      :: ProgressBar
   , logStr        :: String -> IO ()
   , logWindow     :: ScrolledWindow
-  , acidStore     :: AcidState FeedStore
   , filterFuncRef :: IORef ( DisplayFeed  -> IO Bool )
-  , updateView'   :: ReaderMonad ()
+  , updateView'   :: ReaderMonad store ()
   , inputBox      :: HBox
   , inputLabel    :: Label
   , inputEntry    :: Entry
-  , inputAction   :: IORef (String -> ReaderMonad ())
-   }
+  , inputAction   :: IORef (String -> ReaderMonad store ())
+  }
 
 
-type ReaderMonad a = ReaderT ReaderState IO a
+type ReaderMonad store a = ReaderT (ReaderState store) IO a
 
 updateView = asks updateView' >>= id
 
@@ -58,15 +59,16 @@ catchReader a h = do
   r <- ask
   liftIO $ catch (runReaderT a r) (\e -> runReaderT (h e) r)
 
-withFeeds action = ask >>= \acid -> liftIO $ do
-  feeds <- acidAskFeedStore acid
-  result <- action feeds
-  acidPutFeedStore acid result
+-- withFeeds action = ask >>= \acid -> liftIO $ do
+--   feeds <- gedFeeds acid
+--   result <- action feeds
+--   acidPutFeedStore acid result
+
+getFeeds = asks feedStore >>= liftIO . Store.getFeeds
 
 updateFeeds = do
-  acid <- asks acidStore
-  store <- asks gtkStore
-  feeds <- acidAskFeedStore acid
+  store <- asks feedStore
+  feeds <- getFeeds
   bar <- asks progress
   logs <- asks logStr
   s <- ask
@@ -79,55 +81,57 @@ updateFeeds = do
       postGUISync $ progressBarSetText bar ("Updating " ++ name f)
       nStories <- newStories f
       logs $ name f ++ " : " ++ show (S.length nStories) ++ " new Stories"
-      acidAddStories acid (feed f) nStories
+      now <- getCurrentTime
       let latest = S.length . stories $ f
       postGUISync $ do
-        addStoriesToGTKStore (feed f) (indicesFrom latest nStories) store
+        Store.appendStories store (feed f) nStories
         progressBarSetFraction bar (i / numFeeds)
     postGUISync $ widgetHide bar
     return ()
-  liftIO $ createCheckpoint acid
+  liftIO $ Store.bump store
   liftIO $ putStrLn "Update Done."
 
 addFeed url = do
-  acid <- asks acidStore
-  feeds <- acidAskFeedStore acid
-  store <- asks gtkStore
+  store <- asks feedStore
+  feeds <- getFeeds
   handleError . unless (url `Map.member` feeds) . liftIO $ do
     newFeed <- feedWithMetadataFromURL url
-    acidAddFeed acid url newFeed
-    addFeedToGTKStore newFeed store
+    Store.addFeed store newFeed
     return ()
   updateView
   where
     handleError = flip catchReader (\ (e :: FeedFetchError) -> log ("error: " ++ show e))
 
-getCurrentRow = do
+
+getCurrentPath = do
   view <- asks treeView
-  store <- asks gtkStore
-  filter <- asks filterModel
-  (path, _) <- liftIO $ treeViewGetCursor view
+  liftIO $ treeViewGetCursor view
+
+getCurrentRow = do
+  store <- asks feedStore
+  (path, _) <- getCurrentPath
   case path of
     [] -> return Nothing
-    ps -> liftIO $ Just <$> treeFilterModelGetValue store filter ps
+    ps -> liftIO $ getRowFromPath store ps
 
 data Current = CurFeed FeedMetadata | CurStory FeedID StoryMetadata | NoCur
-
-getStore = asks acidStore >>= acidAskFeedStore
+  deriving (Show)
 
 getCurrent = do
   row <- getCurrentRow
-  store <- getStore
+  feeds <- getFeeds
   case row of
     Nothing -> return NoCur
-    Just (FeedFeed f) -> return . CurFeed $ store Map.! f
-    Just (FeedStory f s) -> return $ CurStory f (S.index (stories $ store Map.! f) s )
+    Just (FeedFeed f) -> return . CurFeed $ f
+    Just (FeedStory f s) -> return $ CurStory (feed f) (S.index (stories $ feeds Map.! (feed f)) s )
 
 openCurrentInBrowser = do
   row <- getCurrent
   case row of
     CurStory _ s -> do
-      liftIO . system $ "firefox -new-tab " ++ (ident $ story s)
+      case link $ story s of
+        Nothing -> return ()
+        Just l -> void . liftIO . system $ "firefox -new-tab " ++ l
       setRead True
     CurFeed f -> case home f of
       Nothing -> return ()
@@ -139,10 +143,9 @@ readerT = flip runReaderT
 main = do
   putStrLn "feedreader v1"
   home <- getHomeDirectory
-  acid <- openAcidStateFrom (home ++ "/.feedreader") (FeedStore Map.empty)
-  createCheckpoint acid
-  feeds <- acidAskFeedStore acid
-  uiMain acid feeds
+  store <- createAcidFeedStore (home ++ "/.feedreader")
+  Store.bump store
+  uiMain store
   return ()
 
 -- modify a columnAccessor so that it does something when the user interacts
@@ -151,18 +154,18 @@ onChange (read, write) feedAction storyAction =
   (read, \display new -> fromGTKStore (feedAction new) (storyAction new)  display
                          >> write display new)
 
-readLens acid = onChange (toRead (acidAskFeedStore acid) (const $ return ()) ) (acidFeedRead acid) (acidStoryRead acid)
+readLens store = onChange (toRead (Store.getFeeds store) (const $ return ()) ) ( Store.setFeedRead store) ( Store.setRead store)
 
-markdLens acid = onChange (toMarkd (acidAskFeedStore acid) (const $ return ()) ) (acidFeedMarkd acid) (acidStoryMarkd acid)
+markdLens store = onChange (toMarkd (Store.getFeeds store) (const $ return ()) ) ( Store.setFeedMarked store) ( Store.setMarked store)
 
 getL = fst
 setL = snd
 
 setRead p = do
-  acid <- asks acidStore
+  store <- asks feedStore
   row <- getCurrentRow
   case row of
-    Just r -> liftIO $ (setL $ readLens acid) r p
+    Just r -> liftIO $ (setL $ readLens store) r p
     _      -> return ()
   lift $ updateView
 
@@ -177,26 +180,39 @@ noFilter = lift $ do
 
 filterRead = lift $ do
   ref <- asks filterFuncRef
-  acid <- asks acidStore
+  store <- asks feedStore
   logs <- asks logStr
   liftIO $ writeIORef ref (\row -> do
                 logs (show row)
-                not <$> (getL $ (readLens acid)) row )
+                not <$> (getL $ (readLens store)) row )
   updateView
 
+showCurrent = getCurrent >>= liftIO . print
 
 myKeymap = mkKeymap
-	 [ ((control, "u") , updateFeeds)
-	 , ((0, "g" ) , openCurrentInBrowser)
-	 , ((shift, "g" ) , openCurrentInBrowser)
-	 , ((0, "l" ) , toggleVisible logWindow )
-	 , ((0, "r" ) , setRead True)
-	 , ((0, "u" ) , setRead False)
-	 , ((0, "n" ) , noFilter)
-	 , ((0, "e" ) , lift (log "u") >> filterRead)
-	 , ((0, "h") , lift $ withInput "log" "" log )
-	 , ((shift, "a") , lift $ withInput "Add Feed" "" addFeed )
-	 ]
+         [ ((control, "u") , updateFeeds)
+         , ((0, "g" ) , openCurrentInBrowser)
+         , ((shift, "g" ) , showCurrent )
+         , ((0, "l" ) , toggleVisible logWindow )
+         , ((0, "r" ) , setRead True)
+         , ((0, "u" ) , setRead False)
+         , ((0, "n" ) , noFilter)
+         , ((0, "e" ) , lift (log "u") >> filterRead)
+         , ((0, "h") , lift $ withInput "log" "" log )
+         , ((shift, "a") , lift $ withInput "Add Feed" "" addFeed )
+         , ((0, "space") , toggleExpandCurrent)
+         , ((control, "a") , lift $ withInput "Add from file"
+                                              "/home/uart14/feeds"
+                              (\filename -> do
+                                  feeds <- liftIO $ filter (not.null) . lines <$> readFile filename
+                                  liftIO $ print feeds
+                                  forM feeds $ \f -> do
+                                     liftIO $ putStrLn f
+                                     catchReader (addFeed f)
+                                        ( \(e :: SomeException) ->
+                                            liftIO $ print e)
+                                  return () ))
+         ]
 
 
 ---------------------------
@@ -235,6 +251,15 @@ withInput' t p a = do
   r <- ask
   withInput t p (runReaderT a r)
 
+toggleExpandCurrent = do
+  (path , _) <- getCurrentPath
+  view <- asks treeView
+  expandet <- liftIO $ treeViewRowExpanded view path
+  liftIO $ case expandet of
+    True -> treeViewCollapseRow view path
+    False -> treeViewExpandRow view path False
+  return ()
+
 -- showInfoLabel text = do
 --   label <- asks infoLabel
 --   liftIO $ do
@@ -252,22 +277,22 @@ withInput' t p a = do
 -- UI Main -------------
 ------------------------
 
-uiMain acid feedMap = do
+uiMain :: AcidFeedStore -> IO ()
+uiMain store' = do
   initGUI
-  let feedForest = feedsToForest feedMap
   filterFuncRef <- newIORef $ \_ -> return True
-  (model, filterModel) <- liftIO . withTreeModelFilter filterFuncRef $ treeStoreNew feedForest
-  feedRef <- liftIO $ newIORef $ feedMap
+  model <- createGTKFeedStore store'
+  let store = GTKStore store' model
   actionRef <- newIORef (const $ return ())
   (((view,s,bar, logWindow, logStr, label, entry, inputBox),_),window) <- withMainWindow $ do
     withVBoxNew $ do
-      (v,s) <- packGrow . withScrolledWindow . withNewTreeView filterModel model $ do
-        nameC <- addColumn "name" [ textRenderer $ toName (acidAskFeedStore acid)]
-	liftIO $ set nameC [treeViewColumnExpand := True]
-        lastC <- addColumn "last" [ textRenderer $ toDate (acidAskFeedStore acid)]
- 	liftIO $ set lastC [treeViewColumnExpand := True]
-        addColumn "read"   [ toggleRenderer  $ readLens acid  ]
-        addColumn "marked" [ toggleRenderer  $ markdLens acid ]
+      (v,s) <- packGrow . withScrolledWindow . withNewTreeView model $ do
+        nameC <- addColumn "name" [ textRenderer $ toName (Store.getFeeds store)]
+        liftIO $ set nameC [treeViewColumnExpand := True]
+        lastC <- addColumn "last" [ textRenderer $ toDate (Store.getFeeds store)]
+--      liftIO $ set lastC [treeViewColumnExpand := True]
+        addColumn "read"   [ toggleRenderer  $ readLens store  ]
+        addColumn "marked" [ toggleRenderer  $ markdLens store ]
       ((logWindow, logStr),logScroll) <- packGrow $ withScrolledWindow createLog
       liftIO $ scrolledWindowSetPolicy logScroll PolicyNever PolicyAutomatic
       bar <- packNatural $ addProgressBar
@@ -278,16 +303,14 @@ uiMain acid feedMap = do
         return (label, entry)
       return (v,s,bar, logScroll, logStr, label, entry, inputBox)
   let updateViews = liftIO $ do
-        treeModelFilterRefilter filterModel
+--        treeModelFilterRefilter filterModel
         widgetQueueDraw view
   let globalState = RS
-       { gtkStore     =  model
+       { feedStore    =  store
        , treeView     =  view
-       , filterModel  =  (toTreeModelFilter filterModel)
        , progress     =  bar
        , logStr       =  logStr
        , logWindow    =  logWindow
-       , acidStore    =  acid
        , filterFuncRef=  filterFuncRef
        , updateView'  =  updateViews
        , inputBox     =  inputBox
@@ -307,6 +330,5 @@ uiMain acid feedMap = do
   widgetHide bar
   widgetHide logWindow
   widgetHide inputBox
-  onDestroy window (createCheckpoint acid >> mainQuit)
+  onDestroy window (Store.bump store >> mainQuit)
   mainGUI
-
