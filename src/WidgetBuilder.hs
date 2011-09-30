@@ -67,7 +67,7 @@ addProgressBar = addNewWidget $ progressBarNew
 
 -- add a column to a tree view
 addColumn name renderers= do
-  (view, model) <- ask
+  (view, model, wrapper) <- ask
   col <- liftIO $ treeViewColumnNew
   liftIO $ set col [treeViewColumnTitle := name]
   forM_ renderers $ \i -> do
@@ -78,10 +78,10 @@ addColumn name renderers= do
   liftIO $ treeViewAppendColumn view col
   return col
 
-withNewTreeView model action = do
+withNewTreeView wrapper model action = do
   WA cont <- ask
-  treeView <- liftIO $ treeViewNewWithModel model
-  lift $ runReaderT action (treeView, model)
+  treeView <- liftIO $ treeViewNewWithModel wrapper
+  lift $ runReaderT action (treeView, model, wrapper)
   liftIO $ cont treeView
   return treeView
 
@@ -106,18 +106,23 @@ withTreeModelFilter ref createModel = do
   model <- createModel
   treeModelFilter <- treeModelFilterNew model []
   let filter iter = do
+--        iter <- treeModelFilterConvertIterToChildIter treeModelFilter iter'
+--        print iter
         path <- treeModelGetPath model iter
         case path of
-          [] -> return False -- not catching this case or returning True will
+          [] -> error "empty path"
+                             -- not catching this case or returning True will
                              -- crash the program with seg fault.
                              -- This problem only seems to appear
                              -- when adding the first element to an initially
                              -- empty child store
           _  -> do
-                 print path
-                 row <- treeStoreGetValue model path
+--                 print path
+                 row <- customStoreGetRow model iter
                  filter <- readIORef ref
-                 filter row
+                 res <- filter row
+--                 putStrLn "done filtering this"
+                 return res
   treeModelFilterSetVisibleFunc treeModelFilter filter
   return (model, treeModelFilter)
 

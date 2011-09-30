@@ -88,7 +88,7 @@ updateFeeds = do
         progressBarSetFraction bar (i / numFeeds)
     postGUISync $ widgetHide bar
     return ()
-  liftIO $ Store.bump store
+  liftIO $ Store.milestone store
   liftIO $ putStrLn "Update Done."
 
 addFeed url = do
@@ -144,7 +144,7 @@ main = do
   putStrLn "feedreader v1"
   home <- getHomeDirectory
   store <- createAcidFeedStore (home ++ "/.feedreader")
-  Store.bump store
+  Store.milestone store
   uiMain store
   return ()
 
@@ -183,7 +183,7 @@ filterRead = lift $ do
   store <- asks feedStore
   logs <- asks logStr
   liftIO $ writeIORef ref (\row -> do
-                logs (show row)
+--                logs (show row)
                 not <$> (getL $ (readLens store)) row )
   updateView
 
@@ -281,12 +281,12 @@ uiMain :: AcidFeedStore -> IO ()
 uiMain store' = do
   initGUI
   filterFuncRef <- newIORef $ \_ -> return True
-  model <- createGTKFeedStore store'
+  (model, filterModel) <- withTreeModelFilter filterFuncRef $ createGTKFeedStore store'
   let store = GTKStore store' model
   actionRef <- newIORef (const $ return ())
   (((view,s,bar, logWindow, logStr, label, entry, inputBox),_),window) <- withMainWindow $ do
     withVBoxNew $ do
-      (v,s) <- packGrow . withScrolledWindow . withNewTreeView model $ do
+      (v,s) <- packGrow . withScrolledWindow . withNewTreeView filterModel model $ do
         nameC <- addColumn "name" [ textRenderer $ toName (Store.getFeeds store)]
         liftIO $ set nameC [treeViewColumnExpand := True]
         lastC <- addColumn "last" [ textRenderer $ toDate (Store.getFeeds store)]
@@ -303,7 +303,7 @@ uiMain store' = do
         return (label, entry)
       return (v,s,bar, logScroll, logStr, label, entry, inputBox)
   let updateViews = liftIO $ do
---        treeModelFilterRefilter filterModel
+        treeModelFilterRefilter filterModel
         widgetQueueDraw view
   let globalState = RS
        { feedStore    =  store
@@ -330,5 +330,5 @@ uiMain store' = do
   widgetHide bar
   widgetHide logWindow
   widgetHide inputBox
-  onDestroy window (Store.bump store >> mainQuit)
+  onDestroy window (Store.milestone store >> mainQuit)
   mainGUI

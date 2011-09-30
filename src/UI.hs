@@ -40,7 +40,7 @@ treeFilterModelGetValue model filterModel path = do
 -- indices s = if S.null s then [] else [0.. S.length s - 1 ]
 indicesFrom a s = if S.null s then [] else [a .. a + S.length s - 1 ]
 
-feedToTree f = Node (FeedFeed f) [Node (FeedStory f i) [] | i <- indices (stories f) ]
+feedToTree f = Node (FeedFeed f) [Node (FeedStory f i) [] | i <- indicesFrom 0 (stories f) ]
 
 -- data UISTate = UIS
 --                { view ::
@@ -142,15 +142,17 @@ addStoriesToGTKStore feedID stories store = do
     where denode = map (\(Node (FeedFeed x) _) -> x)
 
 toggleRenderer (getA, setA) = do
-  (view,model) <- ask
+  (view,model,wrapper) <- ask
   liftIO $ do
     rend <- cellRendererToggleNew
     on rend cellToggled $ \s -> do
-      let path = stringToTreePath s
+      path <- treeModelFilterConvertPathToChildPath wrapper $ stringToTreePath s
+      -- let path = stringToTreePath s
       Just iter <- treeModelGetIter model path
       row <- customStoreGetRow model iter
       active <- getA row
       setA row (not active)
+      treeModelFilterRefilter wrapper
       case row of
         FeedFeed _ -> widgetQueueDraw view
         _ -> return ()

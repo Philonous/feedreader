@@ -95,4 +95,4 @@ instance FeedStoreClass AcidFeedStore where
   appendStories (AcidFeedStore a)    = acidAddStories   a
   setRead       (AcidFeedStore a)    = acidStoryRead    a
   setMarked     (AcidFeedStore a)    = acidStoryMarkd   a
-  bump          (AcidFeedStore a)    = createCheckpoint a
+  milestone     (AcidFeedStore a)    = createCheckpoint a

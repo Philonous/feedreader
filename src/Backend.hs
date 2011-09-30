@@ -38,6 +38,6 @@ class FeedStoreClass a where
   getFeed a feedID = do
     feeds <- getFeeds a
     return $ feeds Map.! feedID
-  bump     :: a -> IO ()
-  bump a = return ()
+  milestone     :: a -> IO ()
+  milestone a = return ()
 
