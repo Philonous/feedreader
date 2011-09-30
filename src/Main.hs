@@ -15,6 +15,7 @@ import qualified Data.Foldable        as F
 import           Data.IORef
 import           Data.List            (sortBy)
 import qualified Data.Map             as Map
+import           Data.Maybe
 import           Data.Ord             (comparing)
 import           Data.SafeCopy
 import qualified Data.Sequence        as S
@@ -59,11 +60,6 @@ catchReader a h = do
   r <- ask
   liftIO $ catch (runReaderT a r) (\e -> runReaderT (h e) r)
 
--- withFeeds action = ask >>= \acid -> liftIO $ do
---   feeds <- gedFeeds acid
---   result <- action feeds
---   acidPutFeedStore acid result
-
 getFeeds = asks feedStore >>= liftIO . Store.getFeeds
 
 updateFeeds = do
@@ -74,22 +70,21 @@ updateFeeds = do
   s <- ask
   liftIO . forkIO $ do
     let numFeeds = fromIntegral $ Map.size feeds
-    postGUISync $ widgetShow bar
-    forM (zip [1..] $ Map.elems feeds) $ \(i,f) -> handle
-      ( \(e :: FeedFetchError) -> runReaderT (log $ "Error while updating: \n"
-      ++ (show e) ) s )  $ do
-      postGUISync $ progressBarSetText bar ("Updating " ++ name f)
+    postGUIAsync $ widgetShow bar
+    updates <- liftM catMaybes . forM (zip [1..] $ Map.elems feeds) $ \(i,f) -> handle
+      ( \ (e :: FeedFetchError) -> ( logs $ "Error while updating: \n"  ++ (show e) )
+        >> return Nothing) $ do
+      postGUIAsync $ progressBarSetText bar ("Updating " ++ name f)
       nStories <- newStories f
-      logs $ name f ++ " : " ++ show (S.length nStories) ++ " new Stories"
       now <- getCurrentTime
-      let latest = S.length . stories $ f
-      postGUISync $ do
+      let latest = S.length nStories
+      postGUIAsync $ do
         Store.appendStories store (feed f) nStories
         progressBarSetFraction bar (i / numFeeds)
-    postGUISync $ widgetHide bar
+      return $ Just latest
+    postGUISync $ widgetHide bar >> logs ("New stories: " ++ show (sum updates)) >> return ()
     return ()
   liftIO $ Store.milestone store
-  liftIO $ putStrLn "Update Done."
 
 addFeed url = do
   store <- asks feedStore
@@ -187,6 +182,27 @@ filterRead = lift $ do
                 not <$> (getL $ (readLens store)) row )
   updateView
 
+filterMarkd = lift $ do
+  ref <- asks filterFuncRef
+  store <- asks feedStore
+  logs <- asks logStr
+  liftIO $ writeIORef ref (\row ->
+--                logs (show row)
+                  (getL $ (markdLens store)) row )
+  updateView
+
+filterReadNotMarkd = lift $ do
+  ref <- asks filterFuncRef
+  store <- asks feedStore
+  logs <- asks logStr
+  liftIO $ writeIORef ref (\row -> do
+                  read <- (getL $ (readLens store)) row
+                  markd <- (getL $ (markdLens store)) row
+                  return $ not read || markd
+                  )
+  updateView
+
+
 showCurrent = getCurrent >>= liftIO . print
 
 myKeymap = mkKeymap
@@ -196,8 +212,11 @@ myKeymap = mkKeymap
          , ((0, "l" ) , toggleVisible logWindow )
          , ((0, "r" ) , setRead True)
          , ((0, "u" ) , setRead False)
-         , ((0, "n" ) , noFilter)
-         , ((0, "e" ) , lift (log "u") >> filterRead)
+         , ((alt, "n" ) , noFilter)
+         , ((alt, "space" ) , filterReadNotMarkd)
+         , ((alt, "backspace" ) , noFilter) -- TODO: find key name
+         , ((alt, "m" ) , filterMarkd)
+         , ((alt, "r" ) , filterRead)
          , ((0, "h") , lift $ withInput "log" "" log )
          , ((shift, "a") , lift $ withInput "Add Feed" "" addFeed )
          , ((0, "space") , toggleExpandCurrent)
@@ -280,6 +299,7 @@ toggleExpandCurrent = do
 uiMain :: AcidFeedStore -> IO ()
 uiMain store' = do
   initGUI
+  timeoutAddFull (yield >> return True) priorityDefaultIdle 100 -- keep threads alive
   filterFuncRef <- newIORef $ \_ -> return True
   (model, filterModel) <- withTreeModelFilter filterFuncRef $ createGTKFeedStore store'
   let store = GTKStore store' model
@@ -290,7 +310,7 @@ uiMain store' = do
         nameC <- addColumn "name" [ textRenderer $ toName (Store.getFeeds store)]
         liftIO $ set nameC [treeViewColumnExpand := True]
         lastC <- addColumn "last" [ textRenderer $ toDate (Store.getFeeds store)]
---      liftIO $ set lastC [treeViewColumnExpand := True]
+        liftIO $ set lastC [treeViewColumnExpand := True]
         addColumn "read"   [ toggleRenderer  $ readLens store  ]
         addColumn "marked" [ toggleRenderer  $ markdLens store ]
       ((logWindow, logStr),logScroll) <- packGrow $ withScrolledWindow createLog

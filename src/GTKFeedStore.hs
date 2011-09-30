@@ -148,7 +148,7 @@ data GTKStore a = GTKStore
 instance FeedStoreClass a => FeedStoreClass (GTKStore a) where
   getFeeds      (GTKStore a _) = getFeeds  a
   addFeed       = gtkAddFeed
-  appendStories = appendStories
+  appendStories = gtkAppendStories
   setRead       (GTKStore a _) = setRead   a
   setMarked     (GTKStore a _) = setMarked a
   milestone     (GTKStore a _) = milestone a
@@ -178,8 +178,9 @@ gtkAppendStory (GTKStore model customStore) feed story = do
   unless child $ GTK.treeModelRowHasChildToggled customStore feedPath feedIter
   return feeds
 
-gtkAddStories store feed stories = do
-  forM_ (F.toList stories) $ gtkAppendStory store feed
+gtkAppendStories store feed stories = do
+  forM_ (reverse $ F.toList stories) $ gtkAppendStory store feed
+  getFeeds store
   -- We have to add the stories one-by-one or the filter model will barf
 
 gtkAddFeed
@@ -190,5 +191,5 @@ gtkAddFeed m@(GTKStore store model) f = do
   path <- feedToPath store (feed emptyFeed)
   Just iter <- GTK.treeModelGetIter model path
   GTK.treeModelRowInserted model path iter
-  gtkAddStories m (feed f) (stories f)
-  getFeeds store
+  gtkAppendStories m (feed f) (stories f)
+

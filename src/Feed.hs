@@ -45,7 +45,10 @@ data Story = Story
    , descr  :: Maybe String
    , link   :: Maybe String
    , date   :: Maybe UTCTime
-   } deriving (Typeable, Eq, Show)
+   } deriving (Typeable, Show)
+
+instance Eq Story where
+  (==) = (==) `on` ident
 
 nameDeriveAccessors ''Story (Just . (++"F"))
 
@@ -98,7 +101,7 @@ instance Ord StoryMetadata where
                      ]
 
 data FeedFetchError = FeedParseError | URLError String | HTTPError String
-			deriving (Show, Typeable)
+                        deriving (Show, Typeable)
 instance Exception FeedFetchError
 
 infixl 1 $.
@@ -127,11 +130,11 @@ feedFromURL url = do
                     (\(e :: IOError) -> if isUserError e then
                      throwIO $ HTTPError "connection error"
                      else throwIO e )
-  putStrLn "response and parsing"
+  putStrLn "http response and parsing"
   feed <- parseFeedString <$> getResponseBody httpData
   case feed of
     Nothing -> throwIO FeedParseError
-    Just f  -> return f
+    Just f  -> putStrLn "http done" >> return f
 
 feedWithMetadataFromURL url = do
   feed <- feedFromURL url
@@ -169,17 +172,21 @@ allA acc = accessor
   (F.all (getVal acc))
   (fmap . setVal acc )
 
+anyA acc = accessor
+  (F.any (getVal acc))
+  (fmap . setVal acc )
+
 -- Accessor for values wrapped in a maybe
 maybeA def = accessor (fromMaybe def) (\v _ -> Just v)
 
 showDiffTime :: NominalDiffTime -> String
 showDiffTime (floor . toRational -> (d :: Integer))
-  	      | d < 60 = show d ++ "s"
-  	      | d < 60^2 = show (d `div` 60) ++ "m"
-  	      | d < 60^2 * 24 = show (d `div` 3600) ++ "h"
-  	      | d < 60^2 * 24 * 7 = show (d `div` 3600 * 24) ++ "d"
-  	      | d < 60^2 * 24 * 365 = show (d `div` 3600 * 24 * 7) ++ "w"
-  	      | otherwise = show (d `div` 3600 * 24 * 7 * 365) ++ "y"
+              | d < 60 = show d ++ "s"
+              | d < 60^2 = show (d `div` 60) ++ "m"
+              | d < 60^2 * 24 = show (d `div` 3600) ++ "h"
+              | d < 60^2 * 24 * 7 = show (d `div` 3600 * 24) ++ "d"
+              | d < 60^2 * 24 * 365 = show (d `div` 3600 * 24 * 7) ++ "w"
+              | otherwise = show (d `div` 3600 * 24 * 7 * 365) ++ "y"
 
 timeDiff x y  = showDiffTime (diffUTCTime x y) ++ " ago"
 -- timeDiff x y  = show y

@@ -48,7 +48,7 @@ insertIfNew = Map.insertWith (flip const)
 addFeed' url feed = modFeedStore $ insertIfNew url feed
 
 addStories now feed newStories = modFeedStore $ Map.adjust (lastF ^= now) feed .
-                                   Map.adjust (storiesF ^: ( S.>< newStories)) feed
+                                   Map.adjust (storiesF ^: ( newStories S.><)) feed
 
 modStory f feed story = modFeedStore $ Map.adjust (storiesF ^: S.adjust f story) feed
 

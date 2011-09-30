@@ -72,7 +72,7 @@ nameA = nameF \/ storyF .> titleF .> maybeA ""
 readA = allA readF <. storiesF \/ readF
 
 -- is this story / every story in this feed marked
-markdA = allA markdF <. storiesF \/ markdF
+markdA = anyA markdF <. storiesF \/ markdF
 
 dateA = lastF \/ fetchedF
 
