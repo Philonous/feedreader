@@ -2,44 +2,51 @@
 {-# LANGUAGE NoMonomorphismRestriction, TemplateHaskell, PackageImports, TypeFamilies, DeriveDataTypeable #-}
 module Main where
 
-import           Prelude              hiding (log, catch)
+import           Prelude                   hiding (log, catch)
 
-import           Control.Applicative  ((<$>))
-import           Control.Concurrent
+import           Control.Applicative       ((<$>))
+import           Control.Concurrent        (yield)
+import           Control.Concurrent.Thread
 import           Control.Exception
 import           Control.Monad
 import "mtl"     Control.Monad.Reader
 
 import           Data.Accessor
-import qualified Data.Foldable        as F
+import qualified Data.Foldable             as F
 import           Data.IORef
-import           Data.List            (sortBy)
-import qualified Data.Map             as Map
+import           Data.List                 (sortBy)
+import qualified Data.Map                  as Map
 import           Data.Maybe
-import           Data.Ord             (comparing)
+import           Data.Ord                  (comparing)
 import           Data.SafeCopy
-import qualified Data.Sequence        as S
+import qualified Data.Sequence             as S
+import qualified Data.Strict.Maybe         as Strict
+import qualified Data.Text                 as Text
 import           Data.Time
-import qualified Data.Traversable     as T
+import qualified Data.Traversable          as T
 import           Data.Tree
 
-import           Graphics.UI.Gtk      as GTK
+import           Graphics.UI.Gtk           as GTK
 
+import           System.Mem
 import           System.Cmd
 import           System.Directory
 
-import           Feed
-import           UI
-import qualified Backend              as Store
+import qualified Backend                   as Store
 import           Backend.Acid
-import           WidgetBuilder
-import           Keymap
+import           Backend.Memory
+import           Backend.MemoryBuffered
+import           Feed
 import           GTKFeedStore
+import           Keymap
+import           UI
+import           WidgetBuilder
 
 data ReaderState store = RS
   { feedStore     :: store
   , treeView      :: TreeView
-  , progress      :: ProgressBar
+  , filterModel   :: TreeModelFilter
+  , statusbar     :: Label
   , logStr        :: String -> IO ()
   , logWindow     :: ScrolledWindow
   , filterFuncRef :: IORef ( DisplayFeed  -> IO Bool )
@@ -62,49 +69,54 @@ catchReader a h = do
 
 getFeeds = asks feedStore >>= liftIO . Store.getFeeds
 
+forkM xs action = do
+  threads <- forM xs $ forkIO . action
+  forM threads $ \(_,res) -> res >>= result
+
 updateFeeds = do
   store <- asks feedStore
   feeds <- getFeeds
-  bar <- asks progress
+  bar <- asks statusbar
   logs <- asks logStr
   s <- ask
   liftIO . forkIO $ do
-    let numFeeds = fromIntegral $ Map.size feeds
-    postGUIAsync $ widgetShow bar
-    updates <- liftM catMaybes . forM (zip [1..] $ Map.elems feeds) $ \(i,f) -> handle
+    updates' <- forkM (zip [1..] $ Map.elems feeds) $ \(i,f) -> handle
       ( \ (e :: FeedFetchError) -> ( logs $ "Error while updating: \n"  ++ (show e) )
         >> return Nothing) $ do
-      postGUIAsync $ progressBarSetText bar ("Updating " ++ name f)
-      nStories <- newStories f
+      nStories <- newStories f -- DEBUG
       now <- getCurrentTime
       let latest = S.length nStories
-      postGUIAsync $ do
-        Store.appendStories store (feed f) nStories
-        progressBarSetFraction bar (i / numFeeds)
+      postGUISync . void $ Store.appendStories store (feed f) nStories
+      logs $ Text.unpack (name f) ++ " " ++ show latest ++ " new stories."
       return $ Just latest
-    postGUISync $ widgetHide bar >> logs ("New stories: " ++ show (sum updates)) >> return ()
-    return ()
-  liftIO $ Store.milestone store
+    let updates = sum $ catMaybes updates'
+    postGUISync $ logs ("New stories: " ++ show updates) >> return ()
 
-addFeed url = do
+    {-# SCC "milestone" #-} liftIO $ Store.milestone store
+  return ()
+
+addFeed url = {-# SCC "add_feed_func" #-} do
   store <- asks feedStore
   feeds <- getFeeds
-  handleError . unless (url `Map.member` feeds) . liftIO $ do
-    newFeed <- feedWithMetadataFromURL url
-    Store.addFeed store newFeed
+  handleError . liftIO . void . forkIO . unless (url `Map.member` feeds) $ do
+    newFeed <- {-# SCC "get_feed" #-} feedWithMetadataFromURL url
+    {-# SCC "add_to_Store" #-} postGUISync $ Store.addFeed store newFeed
     return ()
-  updateView
+  {-# SCC "update_view" #-} updateView
   where
     handleError = flip catchReader (\ (e :: FeedFetchError) -> log ("error: " ++ show e))
 
 
 getCurrentPath = do
   view <- asks treeView
-  liftIO $ treeViewGetCursor view
+  (path, _) <- liftIO $ treeViewGetCursor view
+  return path
 
 getCurrentRow = do
   store <- asks feedStore
-  (path, _) <- getCurrentPath
+  filter <- asks filterModel
+  path' <- getCurrentPath
+  path <-  liftIO $ treeModelFilterConvertPathToChildPath filter path'
   case path of
     [] -> return Nothing
     ps -> liftIO $ getRowFromPath store ps
@@ -125,12 +137,12 @@ openCurrentInBrowser = do
   case row of
     CurStory _ s -> do
       case link $ story s of
-        Nothing -> return ()
-        Just l -> void . liftIO . system $ "firefox -new-tab " ++ l
+        Strict.Nothing -> return ()
+        Strict.Just l -> void . liftIO . system $ "firefox -new-tab " ++ (Text.unpack l)
       setRead True
     CurFeed f -> case home f of
-      Nothing -> return ()
-      Just h -> void . liftIO . system $ "firefox -new-tab " ++ h
+      Strict.Nothing -> return ()
+      Strict.Just h -> void . liftIO . system $ "firefox -new-tab " ++ (Text.unpack h)
     _ -> return ()
 
 readerT = flip runReaderT
@@ -140,7 +152,8 @@ main = do
   home <- getHomeDirectory
   store <- createAcidFeedStore (home ++ "/.feedreader")
   Store.milestone store
-  uiMain store
+--  buf <- newIORef =<< Store.getFeeds store
+  uiMain store -- =<< newIORef (Map.empty :: Store.FeedStorage)
   return ()
 
 -- modify a columnAccessor so that it does something when the user interacts
@@ -209,6 +222,7 @@ myKeymap = mkKeymap
          [ ((control, "u") , updateFeeds)
          , ((0, "g" ) , openCurrentInBrowser)
          , ((shift, "g" ) , showCurrent )
+         , ((0, "z" ) , liftIO $ performGC )
          , ((0, "l" ) , toggleVisible logWindow )
          , ((0, "r" ) , setRead True)
          , ((0, "u" ) , setRead False)
@@ -218,16 +232,16 @@ myKeymap = mkKeymap
          , ((alt, "m" ) , filterMarkd)
          , ((alt, "r" ) , filterRead)
          , ((0, "h") , lift $ withInput "log" "" log )
-         , ((shift, "a") , lift $ withInput "Add Feed" "" addFeed )
+         , ((shift, "a") , lift $ withInput "Add Feed" "" (addFeed . Text.pack) )
          , ((0, "space") , toggleExpandCurrent)
          , ((control, "a") , lift $ withInput "Add from file"
                                               "/home/uart14/feeds"
                               (\filename -> do
                                   feeds <- liftIO $ filter (not.null) . lines <$> readFile filename
-                                  liftIO $ print feeds
+                                  -- liftIO $ print feeds
                                   forM feeds $ \f -> do
-                                     liftIO $ putStrLn f
-                                     catchReader (addFeed f)
+                                     -- liftIO $ putStrLn f
+                                     catchReader (addFeed $ Text.pack f)
                                         ( \(e :: SomeException) ->
                                             liftIO $ print e)
                                   return () ))
@@ -271,7 +285,7 @@ withInput' t p a = do
   withInput t p (runReaderT a r)
 
 toggleExpandCurrent = do
-  (path , _) <- getCurrentPath
+  path <- getCurrentPath
   view <- asks treeView
   expandet <- liftIO $ treeViewRowExpanded view path
   liftIO $ case expandet of
@@ -296,7 +310,6 @@ toggleExpandCurrent = do
 -- UI Main -------------
 ------------------------
 
-uiMain :: AcidFeedStore -> IO ()
 uiMain store' = do
   initGUI
   timeoutAddFull (yield >> return True) priorityDefaultIdle 100 -- keep threads alive
@@ -304,7 +317,7 @@ uiMain store' = do
   (model, filterModel) <- withTreeModelFilter filterFuncRef $ createGTKFeedStore store'
   let store = GTKStore store' model
   actionRef <- newIORef (const $ return ())
-  (((view,s,bar, logWindow, logStr, label, entry, inputBox),_),window) <- withMainWindow $ do
+  (((view,s,bar, logWindow, logToWindow, label, entry, inputBox),_),window) <- withMainWindow $ do
     withVBoxNew $ do
       (v,s) <- packGrow . withScrolledWindow . withNewTreeView filterModel model $ do
         nameC <- addColumn "name" [ textRenderer $ toName (Store.getFeeds store)]
@@ -315,12 +328,13 @@ uiMain store' = do
         addColumn "marked" [ toggleRenderer  $ markdLens store ]
       ((logWindow, logStr),logScroll) <- packGrow $ withScrolledWindow createLog
       liftIO $ scrolledWindowSetPolicy logScroll PolicyNever PolicyAutomatic
-      bar <- packNatural $ addProgressBar
+      bar <- packNatural $ addLabel
       liftIO $ scrolledWindowSetPolicy s PolicyNever PolicyAutomatic
       ((label, entry),inputBox) <- packNatural . withHBoxNew $ do
         label <- packNatural addLabel
         entry <- packGrow    addEntry
         return (label, entry)
+      liftIO $ treeViewSetRulesHint v True
       return (v,s,bar, logScroll, logStr, label, entry, inputBox)
   let updateViews = liftIO $ do
         treeModelFilterRefilter filterModel
@@ -328,8 +342,9 @@ uiMain store' = do
   let globalState = RS
        { feedStore    =  store
        , treeView     =  view
-       , progress     =  bar
-       , logStr       =  logStr
+       , filterModel  =  toTreeModelFilter filterModel
+       , statusbar    =  bar
+       , logStr       =  \l -> logToWindow l >> GTK.labelSetText bar l
        , logWindow    =  logWindow
        , filterFuncRef=  filterFuncRef
        , updateView'  =  updateViews
@@ -347,7 +362,6 @@ uiMain store' = do
   addKeymap view True (readerT globalState )  myKeymap
   windowSetDefaultSize window 800 600
   widgetShowAll window
-  widgetHide bar
   widgetHide logWindow
   widgetHide inputBox
   onDestroy window (Store.milestone store >> mainQuit)

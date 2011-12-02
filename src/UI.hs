@@ -2,32 +2,33 @@
 {-# LANGUAGE PackageImports, NoMonomorphismRestriction,  RankNTypes, ScopedTypeVariables #-}
 module UI where
 
-import Data.Accessor
-import Data.Accessor.Basic(fromWrapper)
-import qualified Data.Foldable as F
-import qualified Data.Ix as Ix
-import Data.List (sort, sortBy, elemIndex)
-import qualified Data.Map as Map
-import Data.Ord(comparing)
-import qualified Data.Sequence as S
+import           Data.Accessor
+import           Data.Accessor.Basic        (fromWrapper)
+import qualified Data.Foldable              as F
+import qualified Data.Ix                    as Ix
+import           Data.List                  (sort, sortBy, elemIndex)
+import qualified Data.Map                   as Map
+import           Data.Ord                   (comparing)
+import qualified Data.Sequence              as S
+import qualified Data.Text                  as Text
 
-import Control.Applicative((<$>))
-import Control.Monad
-import "mtl" Control.Monad.Reader
-import "mtl" Control.Monad.Reader.Class
-import "mtl" Control.Monad.Trans
+import           Control.Applicative        ((<$>))
+import           Control.Monad
+import "mtl"     Control.Monad.Reader
+import "mtl"     Control.Monad.Reader.Class
+import "mtl"     Control.Monad.Trans
 
-import Data.IORef
-import Data.Maybe
-import Data.Time
-import Data.Tree
-import Graphics.UI.Gtk as GTK
+import           Data.IORef
+import           Data.Maybe
+import           Data.Time
+import           Data.Tree
+import           Graphics.UI.Gtk            as GTK
 
-import Text.Feed.Query
+import           Text.Feed.Query
 
-import Feed
-import WidgetBuilder
-import GTKFeedStore
+import           Feed
+import           WidgetBuilder
+import           GTKFeedStore
 
 -- data DisplayFeed = FeedFeed FeedID | FeedStory FeedID Int deriving (Show, Eq, Ord)
 
@@ -57,6 +58,8 @@ seqA i = accessor (`safeIndex` i) (S.update i)
 
 showA = accessor show (\x _ -> Prelude.read x)
 
+textA = accessor Text.unpack (\x _ -> Text.pack x)
+
 dispAcc feedAcc storyAcc disp =
   case disp of
       FeedFeed    f -> feedAcc <. unsafeMap (feed f)
@@ -66,7 +69,7 @@ infixl 1 \/
 (\/) = dispAcc
 
 -- name accessor that handles feeds and stories equally
-nameA = nameF \/ storyF .> titleF .> maybeA ""
+nameA = nameF .> textA  \/ storyF .> titleF .> strictMaybeA (Text.pack "") .> textA
 
 -- is this story / every story in this feed read
 readA = allA readF <. storiesF \/ readF
@@ -157,17 +160,3 @@ toggleRenderer (getA, setA) = do
         FeedFeed _ -> widgetQueueDraw view
         _ -> return ()
     return (toCellRenderer rend, cLSA rend $ \row -> [cellToggleActive :=> getA row])
-
-joinTree newTree treeStore pos = do
-  oldTree <- zip [0..] <$> treeStoreGetForest treeStore pos
-  let end = length oldTree
-  let sortedOldTree = sortBy (comparing $ rootLabel . snd) oldTree
-  let sortedNewTree = sortBy (comparing rootLabel) newTree
-  mergeTrees pos end sortedOldTree sortedNewTree
-    where
-      mergeTrees _ _ [] [] = return ()
-      mergeTrees pos end [] ys = treeStoreInsertForest treeStore pos end ys
-      mergeTrees pos end ((cur,(Node x xt)):xs) ya@(yc@(Node y yt):ys) = case compare x y of
-        LT -> mergeTrees pos end xs ya
-        EQ -> joinTree yt treeStore (pos ++[cur]) >> mergeTrees pos end xs ys
-        GT -> treeStoreInsertTree treeStore pos cur yc >> joinTree ys treeStore pos

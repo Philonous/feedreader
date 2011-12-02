@@ -3,10 +3,12 @@ module GTKFeedStore where
 import           Control.Applicative ((<$>))
 import           Control.Monad
 
+import qualified Data.Foldable       as F
 import           Data.List
 import qualified Data.Map            as Map
 import qualified Data.Sequence       as Seq
-import qualified Data.Foldable       as F
+import qualified Data.Strict.Maybe   as Strict
+import qualified Data.Text           as Text
 
 import qualified Graphics.UI.Gtk     as GTK
 import qualified System.Glib.GObject as GTK
@@ -14,7 +16,7 @@ import qualified System.Glib.GObject as GTK
 import           Backend
 import           Feed
 
-import Data.Time
+import           Data.Time
 
 
 newtype GTKFeedStore a = GTKFeedStore {fromGTKFeedStore :: GTK.CustomStore () a}
@@ -71,7 +73,7 @@ getRow store i@(GTK.TreeIter stamp f s flag) = do
   case flag of
     1 -> return $ FeedFeed f'
     2 -> return $ FeedStory f' (fromIntegral s)
-    _ -> return $ FeedFeed $ Feed "" (show i) Nothing now (Seq.empty)
+    _ -> return $ FeedFeed $ Feed (Text.pack "") (Text.pack $ show i) Strict.Nothing now (Seq.empty)
     -- _ -> -- putStrLn ("error, invalid flag:" ++ show i) >>
     --       getRow store (GTK.TreeIter stamp 0 0 1)
 
@@ -83,7 +85,7 @@ getRowFromPath store path = do
 
 
 iterNext store iter@(GTK.TreeIter v f s flag) = do
-  putStrLn $ "next: " ++ show iter
+--  putStrLn $ "next: " ++ show iter
   maybeIter store $
     case flag of
       2 -> GTK.TreeIter v f (s+1) flag
@@ -102,19 +104,16 @@ iterNChildren store Nothing = Map.size <$> getFeeds store
 iterNChildren store (Just iter) = do
   row <- getRow store iter
   case row of
-    FeedFeed f -> putStrLn ("nchildren " ++ show iter ++ " - " ++ show ( Seq.length $ stories f ))
-                    >> pprint (stories f)
-                    >> (return . Seq.length $ stories f)
+    FeedFeed f -> return . Seq.length $ stories f
     _ -> return 0
 
 iterHasChild store iter = (> 0) <$> iterNChildren store (Just iter)
 
-iterNthChild store i n = putStrLn ("nth: " ++ show i) >> iterNthChild' store i n
-iterNthChild' store Nothing n = do
+iterNthChild store Nothing n = do
   maybeIter store $ GTK.TreeIter 0 (fromIntegral n) 0 1
-iterNthChild' store (Just (GTK.TreeIter v f 0 1)) n = maybeIter store $
+iterNthChild store (Just (GTK.TreeIter v f 0 1)) n = maybeIter store $
                                              GTK.TreeIter v f (fromIntegral n) 2
-iterNthChild' _ _ _ = return Nothing
+iterNthChild _ _ _ = return Nothing
 
 iterParent (GTK.TreeIter v f 0 1) = return . Just $ (GTK.TreeIter v 0 0 10)
 iterParent (GTK.TreeIter v f s 2) = return . Just $ (GTK.TreeIter v f 0 1)
@@ -167,7 +166,7 @@ modelEmpty store = do
     Just _  -> return False
 
 
-gtkAppendStory (GTKStore model customStore) feed story = do
+gtkAppendStory (GTKStore model customStore) feed story = {-# SCC "append_story" #-} do
   feeds <- appendStories model feed (Seq.singleton story)
   feedPath <- feedToPath model feed
   let storyPath = feedPath ++ [0]

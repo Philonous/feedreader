@@ -15,6 +15,7 @@ Executable feedreader
   Main-is: Main.hs
   Build-Depends: base
                , acid-state
+               , bytestring
                , containers
                , data-accessor
                , data-accessor-template
@@ -27,8 +28,12 @@ Executable feedreader
                , network
                , process
                , safecopy
+               , strict
+               , text
+               , threads
                , time
                , time-http >= 0.1.0.1
+               , xml
   Other-Modules: Backend
                , Feed
                , Keymap

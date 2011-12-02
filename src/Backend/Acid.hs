@@ -14,6 +14,7 @@ import           Data.Acid
 import qualified Data.Map                   as Map
 import           Data.SafeCopy
 import qualified Data.Sequence              as S
+import qualified Data.Strict.Maybe          as Strict
 import           Data.Time
 import           Data.Typeable
 
@@ -25,6 +26,7 @@ newtype FeedStore = FeedStore {fromFeedStore :: Map.Map FeedID FeedMetadata }
 
 newtype AcidFeedStore = AcidFeedStore (AcidState FeedStore)
 
+deriveSafeCopy 0 'base ''Strict.Maybe
 deriveSafeCopy 0 'base ''Story
 deriveSafeCopy 0 'base ''StoryMetadata
 deriveSafeCopy 0 'base ''FeedMetadata

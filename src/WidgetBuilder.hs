@@ -105,7 +105,7 @@ createLog = do
 withTreeModelFilter ref createModel = do
   model <- createModel
   treeModelFilter <- treeModelFilterNew model []
-  let filter iter = do
+  let filter iter = {-# SCC "filter" #-}do
 --        iter <- treeModelFilterConvertIterToChildIter treeModelFilter iter'
 --        print iter
         path <- treeModelGetPath model iter

@@ -7,44 +7,49 @@ module Feed where
 
 import Prelude hiding(catch)
 
-import Control.Applicative
-import Control.Exception
-import Control.Monad
-import "mtl" Control.Monad.Trans
+import           Control.Applicative
+import           Control.Exception
+import           Control.Monad
+import "mtl"     Control.Monad.Trans
 
-import Data.Acid
-import Data.Either
+import           Data.Acid
+import           Data.Either
 
-import Data.Accessor
+import           Data.Accessor
 import qualified Data.Accessor.Container as C
-import Data.Accessor.Template
-import qualified Data.Foldable as F
-import Data.Function
-import qualified Data.Map as M
-import Data.Maybe
-import Data.Ord
-import qualified Data.Sequence as S
-import Data.Time
-import qualified Data.Time.RFC822 as RFC822
-import Data.Typeable
+import           Data.Accessor.Template
+import           Data.ByteString         (ByteString)
+import qualified Data.Foldable           as F
+import           Data.Function
+import qualified Data.Map                as M
+import           Data.Ord
+import qualified Data.Sequence           as S
+import qualified Data.Strict             as Strict
+import qualified Data.Text               as Text
+import           Data.Text               (Text)
+import           Data.Time
+import qualified Data.Time.RFC822        as RFC822
+import           Data.Typeable
 
-import Network.HTTP
-import Network.URI
+import           Network.HTTP
+import           Network.URI
 
-import System.IO.Error(isUserError)
+import           System.IO.Error         (isUserError)
 
-import Text.Feed.Import
-import Text.Feed.Query
-import Text.Feed.Types
+import           Text.Feed.Constructor
+import           Text.Feed.Import
+import           Text.Feed.Query
+import           Text.Feed.Types
+import qualified Text.XML.Light          as XML
 
-type StoryID = String
+type StoryID = Text
 
 data Story = Story
    { ident  :: StoryID
-   , title  :: Maybe String
-   , descr  :: Maybe String
-   , link   :: Maybe String
-   , date   :: Maybe UTCTime
+   , title  :: Strict.Maybe Text
+   , descr  :: Strict.Maybe Text
+   , link   :: Strict.Maybe Text
+   , date   :: Strict.Maybe UTCTime
    } deriving (Typeable, Show)
 
 instance Eq Story where
@@ -64,14 +69,14 @@ instance Eq StoryMetadata where
 
 nameDeriveAccessors ''StoryMetadata (Just . (++"F"))
 
-type FeedID = String
+type FeedID = Text
 
 data FeedMetadata = Feed
-            { feed    :: FeedID
-            , name    :: String
-            , home    :: Maybe String
-            , last    :: UTCTime
-            , stories :: S.Seq StoryMetadata
+            { feed    :: !FeedID
+            , name    :: !Text
+            , home    :: !(Strict.Maybe Text)
+            , last    :: !UTCTime
+            , stories :: !(S.Seq StoryMetadata)
     } deriving (Typeable, Show)
 
 instance Eq FeedMetadata where
@@ -109,32 +114,52 @@ infixl 1 $.
 
 mapf = flip fmap
 
+strictCatMaybes [] = []
+strictCatMaybes (Just x : xs) = x : strictCatMaybes xs
+strictCatMaybes (Nothing : xs) = strictCatMaybes xs
+
 feedToStories :: Feed -> [Story]
-feedToStories feed = catMaybes . map feedItemToStory
+feedToStories feed = strictCatMaybes . map feedItemToStory
                      $ getFeedItems feed
 
+toStrict Nothing = Strict.Nothing
+toStrict (Just x) = Strict.Just x
+
+toStrictText = toStrict . fmap Text.pack
+
 feedItemToStory item = getItemId item `mapf` \iid -> Story
-                                    $. snd iid
-                                    $. getItemTitle item
-                                    $. getItemDescription item
-                                    $. getItemLink item
-                                    $. (zonedTimeToUTC <$>
+                                    $. Text.pack (snd iid)
+                                    $. toStrictText (getItemTitle item)
+                                    $. toStrictText (getItemDescription item)
+                                    $. toStrictText (getItemLink item)
+                                    $. (zonedTimeToUTC <$> toStrict
                                         (RFC822.parse =<< getItemDate item))
 
-feedFromURL :: String -> IO Feed
-feedFromURL url = do
+feedFromURL :: Text -> IO Feed
+feedFromURL url = {-# SCC "feedFromURL" #-} do
+  let url' = Text.unpack url
   putStrLn "http..."
-  httpData <- case parseURI url of
-    Nothing -> throwIO . HTTPError $ "Not a valid URL: \"" ++ url ++ "\""
-    Just u -> catch (simpleHTTP (mkRequest GET u))
+  httpData <- {-# SCC "parseURI" #-} case parseURI url' of
+    Nothing -> throwIO . HTTPError $ "Not a valid URL: \"" ++ url' ++ "\""
+    Just u -> {-# SCC "connect" #-} catch (simpleHTTP (mkRequest GET u))
                     (\(e :: IOError) -> if isUserError e then
                      throwIO $ HTTPError "connection error"
                      else throwIO e )
   putStrLn "http response and parsing"
-  feed <- parseFeedString <$> getResponseBody httpData
+  unparsedFeed <- getResponseBody httpData :: IO ByteString
+  let xml = {-# SCC "parseXMLDoc" #-} XML.parseXMLDoc unparsedFeed
+  feed <- case xml of
+    Nothing -> throwIO FeedParseError
+    Just e  -> return $ readAtom e `mplus`
+                        readRSS2 e `mplus`
+                        readRSS1 e `mplus`
+                        Just (XMLFeed e)
   case feed of
     Nothing -> throwIO FeedParseError
-    Just f  -> putStrLn "http done" >> return f
+    Just f  ->
+      putStrLn (url' ++ " is " ++ show (getFeedKind f))
+      >> putStrLn "http done"
+      >> return f
 
 feedWithMetadataFromURL url = do
   feed <- feedFromURL url
@@ -142,7 +167,7 @@ feedWithMetadataFromURL url = do
   now <- getCurrentTime
   let storiesMetadata = S.fromList . mapf stories
                         $ \s -> SMD s now False False
-  return $ Feed url (getFeedTitle feed) (getFeedHome feed) now storiesMetadata
+  return $ Feed url (Text.pack $ getFeedTitle feed) (toStrictText $ getFeedHome feed) now storiesMetadata
 
 grabFeeds urls = do
   feeds <- mapM feedWithMetadataFromURL urls
@@ -177,16 +202,16 @@ anyA acc = accessor
   (fmap . setVal acc )
 
 -- Accessor for values wrapped in a maybe
-maybeA def = accessor (fromMaybe def) (\v _ -> Just v)
+strictMaybeA def = accessor (Strict.fromMaybe def) (\v _ -> Strict.Just v)
 
 showDiffTime :: NominalDiffTime -> String
-showDiffTime (floor . toRational -> (d :: Integer))
+showDiffTime (floor -> (d :: Integer))
               | d < 60 = show d ++ "s"
               | d < 60^2 = show (d `div` 60) ++ "m"
               | d < 60^2 * 24 = show (d `div` 3600) ++ "h"
-              | d < 60^2 * 24 * 7 = show (d `div` 3600 * 24) ++ "d"
-              | d < 60^2 * 24 * 365 = show (d `div` 3600 * 24 * 7) ++ "w"
-              | otherwise = show (d `div` 3600 * 24 * 7 * 365) ++ "y"
+              | d < 60^2 * 24 * 7 = show (d `div` (3600 * 24)) ++ "d"
+              | d < 60^2 * 24 * 365 = show (d `div` (3600 * 24 * 7)) ++ "w"
+              | otherwise = show (d `div` (3600 * 24 * 7 * 365)) ++ "y"
 
 timeDiff x y  = showDiffTime (diffUTCTime x y) ++ " ago"
 -- timeDiff x y  = show y
